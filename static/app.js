@@ -673,10 +673,10 @@ function rebuildDiagram() {
       const mx = (sPos.x + tPos.x) / 2, my = (sPos.y + tPos.y) / 2;
       const lbl = connLabel(conn);
       traces.push({ type: 'scatter', mode: 'text', x: [mx], y: [my], text: [lbl],
-        textfont: { color: 'white', size: 17 }, hoverinfo: 'none', showlegend: false });
+        textfont: { color: 'white', size: 12 }, hoverinfo: 'none', showlegend: false });
       bgLabelTI.push(traces.length);
       traces.push({ type: 'scatter', mode: 'text', x: [mx], y: [my], text: [lbl],
-        textfont: { color: [_EDGE_BASE], size: 9 }, hoverinfo: 'none', showlegend: false });
+        textfont: { color: [_EDGE_BASE], size: 10 }, hoverinfo: 'none', showlegend: false });
     });
   } else {
     connections.forEach(() => bgLabelTI.push(-1));
@@ -703,10 +703,10 @@ function rebuildDiagram() {
       const mx = (sPos.x + tPos.x) / 2, my = (sPos.y + tPos.y) / 2;
       const lbl = connLabel(conn);
       traces.push({ type: 'scatter', mode: 'text', x: [mx], y: [my], text: [lbl],
-        textfont: { color: 'white', size: 17 }, opacity: 0, hoverinfo: 'none', showlegend: false });
+        textfont: { color: 'white', size: 12 }, opacity: 0, hoverinfo: 'none', showlegend: false });
       ovLabelTI.push(traces.length);
       traces.push({ type: 'scatter', mode: 'text', x: [mx], y: [my], text: [lbl],
-        textfont: { color: [_EDGE_BASE], size: 9 }, opacity: 0, hoverinfo: 'none', showlegend: false });
+        textfont: { color: [_EDGE_BASE], size: 10 }, opacity: 0, hoverinfo: 'none', showlegend: false });
     });
   } else {
     connections.forEach(() => ovLabelTI.push(-1));
