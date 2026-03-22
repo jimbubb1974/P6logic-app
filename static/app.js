@@ -36,25 +36,23 @@ PAYLOAD.edges.forEach(e => {
 // ── key activities set (drives logic diagram) ────────────────────────────
 let keySet = new Set();   // set of task ids
 
+// ── shorthand names (from second column of imported spreadsheet) ──────────
+let shorthandMap = {};    // task id -> shorthand string
+let labelMode = 'short';  // 'id' | 'short' | 'name'
+
+function getLabelForTask(task) {
+  if (labelMode === 'name')  return task.name;
+  if (labelMode === 'short') return shorthandMap[task.id] || task.code;
+  return task.code;   // 'id' (default)
+}
+
 // ════════════════════════════════════════════════════════════════════════
 // 1.  CYTOSCAPE NETWORK EXPLORER
 // ════════════════════════════════════════════════════════════════════════
 
-const cyNodes = PAYLOAD.tasks.map(t => ({
-  data: { id: t.id, label: t.code, task: t },
-}));
-const cyEdges = PAYLOAD.edges.map((e, i) => ({
-  data: {
-    id: 'e' + i,
-    source: e.src_id,
-    target: e.tgt_id,
-    edgeData: e,
-  },
-}));
-
 const cy = cytoscape({
   container: document.getElementById('cy'),
-  elements: { nodes: cyNodes, edges: cyEdges },
+  elements: [],   // populated dynamically by focusExplorer()
   style: [
     {
       selector: 'node',
@@ -73,104 +71,201 @@ const cy = cytoscape({
         'text-outline-color': '#fff',
       }
     },
+    // The focused activity — bold ring
+    {
+      selector: 'node.explorer-focus',
+      style: {
+        'background-color': '#e94560',
+        'border-width': 0,
+        'color': '#fff',
+        'text-outline-color': '#c0293f',
+        'width': 34,
+        'height': 34,
+      }
+    },
+    // Activities that are key activities — subtle ring
     {
       selector: 'node.selected-key',
       style: {
-        'border-width': 3,
-        'border-color': '#e94560',
-        'background-color': '#e94560',
-      }
-    },
-    {
-      selector: 'node.highlighted',
-      style: {
         'border-width': 2,
-        'border-color': '#f39c12',
-        'z-index': 10,
+        'border-color': '#e94560',
+        'border-opacity': 0.5,
       }
     },
     {
       selector: 'node.faded',
-      style: { 'opacity': 0.15 }
+      style: { 'opacity': 0.2 }
     },
     {
       selector: 'edge',
       style: {
-        'width': 1,
+        'width': 1.5,
         'line-color': '#aaaaaa',
         'target-arrow-color': '#aaaaaa',
         'target-arrow-shape': 'triangle',
         'curve-style': 'bezier',
-        'opacity': 0.7,
+        'opacity': 0.8,
         'arrow-scale': 0.8,
       }
     },
     {
-      selector: 'edge.highlighted-succ',
-      style: { 'line-color': '#3498db', 'target-arrow-color': '#3498db', 'opacity': 1, 'width': 2 }
+      selector: 'edge.pred-edge',
+      style: { 'line-color': '#9b59b6', 'target-arrow-color': '#9b59b6', 'width': 2 }
     },
     {
-      selector: 'edge.highlighted-pred',
-      style: { 'line-color': '#9b59b6', 'target-arrow-color': '#9b59b6', 'opacity': 1, 'width': 2 }
+      selector: 'edge.succ-edge',
+      style: { 'line-color': '#3498db', 'target-arrow-color': '#3498db', 'width': 2 }
     },
     {
-      selector: 'edge.faded',
-      style: { 'opacity': 0.05 }
+      selector: 'node.pred-node',
+      style: { 'color': '#9b59b6' }
     },
     {
-      selector: 'node.hidden, edge.hidden',
-      style: { 'display': 'none' }
+      selector: 'node.succ-node',
+      style: { 'color': '#3498db' }
     },
   ],
-  layout: { name: 'preset' },   // positions set via dagre later
+  layout: { name: 'preset' },
   wheelSensitivity: 0.3,
   minZoom: 0.05,
-  maxZoom: 4,
+  maxZoom: 8,
 });
 
-// Apply dagre layout after mount
-setTimeout(() => {
-  cy.layout({
-    name: 'breadthfirst',
-    directed: true,
-    spacingFactor: 1.2,
-    animate: false,
-  }).run();
-  cy.fit(cy.elements(), 30);
-}, 50);
+// ── focus explorer on a given activity ──────────────────────────────────
+let explorerFocusId = null;
+const explorerEmpty = document.getElementById('explorer-empty');
 
-// ── node click: toggle key activity ─────────────────────────────────────
-cy.on('tap', 'node', evt => {
-  const node = evt.target;
-  const id = node.id();
-  if (keySet.has(id)) {
-    keySet.delete(id);
-    node.removeClass('selected-key');
-  } else {
-    keySet.add(id);
-    node.addClass('selected-key');
+function clearExplorer() {
+  explorerFocusId = null;
+  cy.elements().remove();
+  explorerEmpty.style.display = '';
+  document.getElementById('selected-count').textContent =
+    keySet.size + ' key activit' + (keySet.size === 1 ? 'y' : 'ies') + ' selected';
+}
+
+const EXPLORER_MAX_EACH = 100;   // max nodes per direction (pred / succ)
+
+// BFS outward from startId following neighborFn, assigning tier numbers.
+// sign = -1 for predecessors (tiers go negative), +1 for successors.
+// Returns { id: tier } for all discovered nodes (excluding startId).
+function _explorerBFS(startId, neighborFn, sign) {
+  const tiers = {};
+  const visited = new Set([startId]);
+  let frontier = [startId];
+  let tier = 0;
+  while (frontier.length && Object.keys(tiers).length < EXPLORER_MAX_EACH) {
+    tier += sign;
+    const next = [];
+    for (const id of frontier) {
+      for (const nbr of (neighborFn(id) || [])) {
+        if (!visited.has(nbr) && Object.keys(tiers).length < EXPLORER_MAX_EACH) {
+          visited.add(nbr);
+          tiers[nbr] = tier;
+          next.push(nbr);
+        }
+      }
+    }
+    frontier = next;
   }
-  updateSelectedCount();
-  rebuildDiagram();
+  return tiers;
+}
+
+function focusExplorer(taskId) {
+  const task = taskById[taskId];
+  if (!task) return;
+  explorerFocusId = taskId;
+  explorerEmpty.style.display = 'none';
+
+  // Full transitive BFS in both directions
+  const predTiers = _explorerBFS(taskId, id => predMap[id], -1);
+  const succTiers = _explorerBFS(taskId, id => succMap[id], +1);
+
+  const tierOf = { [taskId]: 0, ...predTiers, ...succTiers };
+  const allIds  = new Set(Object.keys(tierOf));
+
+  const capped = Object.keys(predTiers).length >= EXPLORER_MAX_EACH ||
+                 Object.keys(succTiers).length >= EXPLORER_MAX_EACH;
+
+  // Edges between visible nodes, excluding bypass edges that jump from the
+  // predecessor region (tier < 0) directly to the successor region (tier > 0)
+  // without passing through the focus node (tier 0).
+  const visEdges = PAYLOAD.edges.filter(e => {
+    if (!allIds.has(e.src_id) || !allIds.has(e.tgt_id)) return false;
+    const srcTier = tierOf[e.src_id] ?? 0;
+    const tgtTier = tierOf[e.tgt_id] ?? 0;
+    return !(srcTier < 0 && tgtTier > 0);
+  });
+
+  // Rebuild graph
+  cy.elements().remove();
+
+  const nodes = [...allIds].map(id => {
+    const t = taskById[id];
+    return t ? { data: { id, label: getLabelForTask(t), task: t } } : null;
+  }).filter(Boolean);
+
+  cy.add([
+    ...nodes,
+    ...visEdges.map((e, i) => ({ data: { id: 'ce' + i, source: e.src_id, target: e.tgt_id } })),
+  ]);
+
+  // Tier-based preset layout: tier × COL_W on x-axis, spread within tier on y-axis
+  const COL_W = 180, ROW_H = 52;
+  const tierGroups = {};
+  [...allIds].forEach(id => {
+    const t = tierOf[id];
+    (tierGroups[t] = tierGroups[t] || []).push(id);
+  });
+  Object.values(tierGroups).forEach(g =>
+    g.sort((a, b) => (taskById[a]?.code || '').localeCompare(taskById[b]?.code || ''))
+  );
+
+  cy.layout({
+    name: 'preset',
+    positions: node => {
+      const id   = node.id();
+      const tier = tierOf[id] ?? 0;
+      const grp  = tierGroups[tier];
+      const idx  = grp.indexOf(id);
+      return { x: tier * COL_W, y: (idx - (grp.length - 1) / 2) * ROW_H };
+    },
+  }).run();
+
+  // Style nodes
+  cy.getElementById(taskId).addClass('explorer-focus');
+  Object.keys(predTiers).forEach(id => cy.getElementById(id).addClass('pred-node'));
+  Object.keys(succTiers).forEach(id => cy.getElementById(id).addClass('succ-node'));
+
+  // Style edges: source tier < 0 → pred chain (purple); source tier ≥ 0 → succ chain (blue)
+  cy.edges().forEach(e => {
+    const srcTier = tierOf[e.source().id()] ?? 0;
+    e.addClass(srcTier < 0 ? 'pred-edge' : 'succ-edge');
+  });
+
+  // Mark current key activities
+  cy.nodes().forEach(n => { if (keySet.has(n.id())) n.addClass('selected-key'); });
+
+  // Show cap warning in footer
+  document.getElementById('selected-count').textContent =
+    (capped ? `⚠ capped at ${EXPLORER_MAX_EACH}/direction — ` : '') +
+    keySet.size + ' key activit' + (keySet.size === 1 ? 'y' : 'ies') + ' selected';
+
+  cy.fit(cy.elements(), 40);
+}
+
+// ── node click in explorer: navigate to that node ───────────────────────
+cy.on('tap', 'node', evt => {
+  focusExplorer(evt.target.id());
 });
 
-// ── node hover: highlight neighbours ────────────────────────────────────
+// ── node hover: tooltip ──────────────────────────────────────────────────
 const tooltip = document.getElementById('cy-tooltip');
 
 cy.on('mouseover', 'node', evt => {
   const node = evt.target;
   const task = node.data('task');
-
-  // highlight neighbours
-  cy.elements().addClass('faded').removeClass('highlighted highlighted-succ highlighted-pred');
-  node.removeClass('faded').addClass('highlighted');
-  node.outgoers('edge').removeClass('faded').addClass('highlighted-succ');
-  node.incomers('edge').removeClass('faded').addClass('highlighted-pred');
-  node.neighborhood('node').removeClass('faded').addClass('highlighted');
-
-  // tooltip
-  const pos = evt.renderedPosition;
-  const container = document.getElementById('cy').getBoundingClientRect();
+  const pos  = evt.renderedPosition;
+  const rect = document.getElementById('cy').getBoundingClientRect();
   const floatStr = task.float_days != null ? `Float: ${Math.round(task.float_days)}d` : '';
   tooltip.innerHTML = `
     <div class="tip-code">${task.code}</div>
@@ -178,59 +273,68 @@ cy.on('mouseover', 'node', evt => {
     <div class="tip-meta">${floatStr}${task.category ? ' &nbsp;·&nbsp; ' + task.category : ''}</div>
   `;
   tooltip.style.display = 'block';
-  tooltip.style.left = (container.left + pos.x + 14) + 'px';
-  tooltip.style.top  = (container.top  + pos.y - 10) + 'px';
+  tooltip.style.left = (rect.left + pos.x + 14) + 'px';
+  tooltip.style.top  = (rect.top  + pos.y - 10) + 'px';
 });
 
-cy.on('mouseout', 'node', () => {
-  cy.elements().removeClass('faded highlighted highlighted-succ highlighted-pred');
-  tooltip.style.display = 'none';
-});
+cy.on('mouseout', 'node', () => { tooltip.style.display = 'none'; });
 
-// ── search box ────────────────────────────────────────────────────────────
-const searchBox   = document.getElementById('search-box');
-const searchCount = document.getElementById('search-count');
+// ── search box: find-and-focus ────────────────────────────────────────────
+const searchBox      = document.getElementById('search-box');
+const explorerResults = document.getElementById('explorer-results');
 
 searchBox.addEventListener('input', () => {
   const q = searchBox.value.trim().toLowerCase();
-  if (!q) {
-    cy.elements().removeClass('hidden');
-    searchCount.textContent = '';
-    return;
-  }
-  let shown = 0;
-  cy.nodes().forEach(n => {
-    const t = n.data('task');
-    const match = t.code.toLowerCase().includes(q) || t.name.toLowerCase().includes(q);
-    if (match) { n.removeClass('hidden'); shown++; }
-    else        { n.addClass('hidden'); }
+  explorerResults.innerHTML = '';
+  if (!q) { explorerResults.style.display = 'none'; return; }
+
+  const matches = PAYLOAD.tasks
+    .filter(t => t.code.toLowerCase().includes(q) || t.name.toLowerCase().includes(q))
+    .slice(0, 15);
+
+  if (!matches.length) { explorerResults.style.display = 'none'; return; }
+
+  matches.forEach(task => {
+    const div = document.createElement('div');
+    div.className = 'expl-result';
+    div.innerHTML = `<span class="expl-result-code">${task.code}</span><span class="expl-result-name">${task.name}</span>`;
+    div.addEventListener('mousedown', e => {
+      e.preventDefault();
+      searchBox.value = task.code;
+      explorerResults.style.display = 'none';
+      focusExplorer(task.id);
+    });
+    explorerResults.appendChild(div);
   });
-  // Hide edges that connect to hidden nodes
-  cy.edges().forEach(e => {
-    const hidden = e.source().hasClass('hidden') || e.target().hasClass('hidden');
-    if (hidden) e.addClass('hidden'); else e.removeClass('hidden');
-  });
-  searchCount.textContent = shown + ' shown';
+  explorerResults.style.display = 'block';
+});
+
+searchBox.addEventListener('blur', () => {
+  setTimeout(() => { explorerResults.style.display = 'none'; }, 150);
 });
 
 // ── footer buttons ────────────────────────────────────────────────────────
 document.getElementById('clear-sel-btn').addEventListener('click', () => {
   keySet.clear();
-  cy.nodes().removeClass('selected-key');
-  updateSelectedCount();
+  shorthandMap = {};
+  clearExplorer();
   rebuildDiagram();
+  kaRenderTable();
 });
 
 document.getElementById('add-all-btn').addEventListener('click', () => {
-  cy.nodes(':visible').forEach(n => {
+  cy.nodes().forEach(n => {
     keySet.add(n.id());
     n.addClass('selected-key');
   });
   updateSelectedCount();
   rebuildDiagram();
+  kaRenderTable();
 });
 
 function updateSelectedCount() {
+  // If explorer is showing a focused graph, let focusExplorer manage the footer text
+  if (explorerFocusId) return;
   document.getElementById('selected-count').textContent =
     keySet.size + ' key activit' + (keySet.size === 1 ? 'y' : 'ies') + ' selected';
 }
@@ -248,6 +352,25 @@ function buildCategoryLegend() {
   ).join('');
 }
 buildCategoryLegend();
+
+// ── label mode toggle ─────────────────────────────────────────────────────
+const _LABEL_MODES = ['id', 'short', 'name'];
+const _LABEL_MODE_TEXT = { id: 'Labels: ID', short: 'Labels: Short', name: 'Labels: Name' };
+
+function updateCyLabels() {
+  cy.nodes().forEach(n => n.data('label', getLabelForTask(n.data('task'))));
+  // Re-focus to refresh labels if explorer is showing something
+  if (explorerFocusId) focusExplorer(explorerFocusId);
+}
+
+document.getElementById('label-mode-btn').addEventListener('click', function() {
+  const idx = _LABEL_MODES.indexOf(labelMode);
+  labelMode = _LABEL_MODES[(idx + 1) % _LABEL_MODES.length];
+  this.textContent = _LABEL_MODE_TEXT[labelMode];
+  this.classList.toggle('active', labelMode !== 'id');
+  updateCyLabels();
+  rebuildDiagram();
+});
 
 // ── import key activities ──────────────────────────────────────────────────
 const importBtn    = document.getElementById('import-btn');
@@ -271,55 +394,23 @@ importFile.addEventListener('change', () => {
 
   reader.onload = evt => {
     try {
-      let rows = [];   // [ [code, shorthand?], ... ]
-
+      let rows = [];
       if (ext === 'csv' || ext === 'txt') {
-        // Parse CSV manually
         const text = evt.target.result;
         text.split(/\r?\n/).forEach(line => {
           if (!line.trim()) return;
-          // Handle quoted fields minimally
           const parts = line.split(',').map(p => p.trim().replace(/^"|"$/g, '').trim());
           if (parts[0]) rows.push(parts);
         });
       } else {
-        // Excel: use SheetJS
         const data = new Uint8Array(evt.target.result);
         const wb = XLSX.read(data, { type: 'array' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
         rows = raw.map(r => [String(r[0] || '').trim(), String(r[1] || '').trim()]);
       }
-
-      // Drop header row if first cell matches known labels
-      if (rows.length && _HEADER_LABELS.has(rows[0][0].toLowerCase())) {
-        rows = rows.slice(1);
-      }
-
-      // Match codes against schedule data
-      let matched = 0, missing = [];
-      // Clear existing selection first
-      keySet.clear();
-      cy.nodes().removeClass('selected-key');
-
-      rows.forEach(([code]) => {
-        if (!code) return;
-        const task = taskByCode[code];
-        if (task) {
-          keySet.add(task.id);
-          cy.getElementById(task.id).addClass('selected-key');
-          matched++;
-        } else {
-          missing.push(code);
-        }
-      });
-
-      // Reset the file input so the same file can be re-imported if needed
       importFile.value = '';
-
-      updateSelectedCount();
-      rebuildDiagram();
-
+      const { matched, missing } = applyImportRows(rows);
       if (missing.length === 0) {
         importStatus.textContent = `✓ ${matched} imported`;
       } else {
@@ -366,13 +457,262 @@ importFile.addEventListener('change', () => {
 
 
 // ════════════════════════════════════════════════════════════════════════
-// 2.  LOGIC DIAGRAM (Plotly)
+// 2.  SHARED IMPORT LOGIC
+// ════════════════════════════════════════════════════════════════════════
+
+// Applies a parsed rows array [[code, shorthand], ...] to keySet + shorthandMap.
+// Drops a header row if the first cell matches a known label.
+// Returns { matched, missing }.
+function applyImportRows(rows) {
+  if (rows.length && _HEADER_LABELS.has(String(rows[0][0]).toLowerCase())) {
+    rows = rows.slice(1);
+  }
+  let matched = 0;
+  const missing = [];
+  keySet.clear();
+  shorthandMap = {};
+  cy.nodes().removeClass('selected-key');
+
+  rows.forEach(([code, shorthand]) => {
+    if (!code) return;
+    const task = taskByCode[code];
+    if (task) {
+      keySet.add(task.id);
+      if (shorthand) shorthandMap[task.id] = shorthand;
+      cy.getElementById(task.id).addClass('selected-key');
+      matched++;
+    } else {
+      missing.push(code);
+    }
+  });
+
+  updateCyLabels();
+  updateSelectedCount();
+  rebuildDiagram();
+  kaRenderTable();
+  return { matched, missing };
+}
+
+
+// ════════════════════════════════════════════════════════════════════════
+// 3.  KEY ACTIVITIES EDITOR MODAL
+// ════════════════════════════════════════════════════════════════════════
+
+const kaOverlay  = document.getElementById('ka-overlay');
+const kaRowCount = document.getElementById('ka-row-count');
+
+function kaOpen() {
+  kaRenderTable();
+  kaInitColResize();
+  document.getElementById('ka-search-input').value = '';
+  document.getElementById('ka-search-results').style.display = 'none';
+  kaOverlay.style.display = 'flex';
+}
+
+function kaClose() {
+  kaOverlay.style.display = 'none';
+}
+
+function kaRenderTable() {
+  const tbody = document.getElementById('ka-tbody');
+  tbody.innerHTML = '';
+
+  const sorted = [...keySet]
+    .map(id => taskById[id]).filter(Boolean)
+    .sort((a, b) => (a.early_start || '').localeCompare(b.early_start || '') || a.code.localeCompare(b.code));
+
+  sorted.forEach(task => {
+    const tr = document.createElement('tr');
+    tr.dataset.id = task.id;
+
+    const codeTd   = document.createElement('td');
+    codeTd.className = 'ka-code-cell';
+    codeTd.textContent = task.code;
+
+    const shortTd  = document.createElement('td');
+    const shortIn  = document.createElement('input');
+    shortIn.type = 'text';
+    shortIn.className = 'ka-short-input';
+    shortIn.value = shorthandMap[task.id] || '';
+    shortIn.placeholder = '—';
+    shortIn.addEventListener('change', () => {
+      const v = shortIn.value.trim();
+      if (v) shorthandMap[task.id] = v; else delete shorthandMap[task.id];
+      updateCyLabels();
+      rebuildDiagram();
+    });
+    shortTd.appendChild(shortIn);
+
+    const nameTd   = document.createElement('td');
+    nameTd.className = 'ka-name-cell';
+    nameTd.textContent = task.name;
+    nameTd.title = task.name;
+
+    const floatTd  = document.createElement('td');
+    floatTd.className = 'ka-float-cell';
+    floatTd.textContent = task.float_days != null ? Math.round(task.float_days) : '—';
+
+    const rmTd     = document.createElement('td');
+    const rmBtn    = document.createElement('button');
+    rmBtn.className = 'ka-remove-btn';
+    rmBtn.textContent = '✕';
+    rmBtn.title = 'Remove';
+    rmBtn.addEventListener('click', () => {
+      keySet.delete(task.id);
+      delete shorthandMap[task.id];
+      cy.getElementById(task.id).removeClass('selected-key');
+      updateCyLabels();
+      updateSelectedCount();
+      rebuildDiagram();
+      kaRenderTable();
+    });
+    rmTd.appendChild(rmBtn);
+
+    tr.append(codeTd, shortTd, nameTd, floatTd, rmTd);
+    tbody.appendChild(tr);
+  });
+
+  kaRowCount.textContent = sorted.length + ' activit' + (sorted.length === 1 ? 'y' : 'ies');
+}
+
+// ── search to add ─────────────────────────────────────────────────────────
+const kaSearchInput   = document.getElementById('ka-search-input');
+const kaSearchResults = document.getElementById('ka-search-results');
+
+kaSearchInput.addEventListener('input', () => {
+  const q = kaSearchInput.value.trim().toLowerCase();
+  kaSearchResults.innerHTML = '';
+  if (!q) { kaSearchResults.style.display = 'none'; return; }
+
+  const matches = PAYLOAD.tasks
+    .filter(t => !keySet.has(t.id) &&
+      (t.code.toLowerCase().includes(q) || t.name.toLowerCase().includes(q)))
+    .slice(0, 12);
+
+  if (!matches.length) { kaSearchResults.style.display = 'none'; return; }
+
+  matches.forEach(task => {
+    const div = document.createElement('div');
+    div.className = 'ka-result-item';
+    div.innerHTML = `<span class="ka-result-code">${task.code}</span><span class="ka-result-name">${task.name}</span>`;
+    div.addEventListener('mousedown', e => {
+      e.preventDefault();   // keep focus on input
+      keySet.add(task.id);
+      cy.getElementById(task.id).addClass('selected-key');
+      updateCyLabels();
+      updateSelectedCount();
+      rebuildDiagram();
+      kaRenderTable();
+      kaSearchInput.value = '';
+      kaSearchResults.style.display = 'none';
+    });
+    kaSearchResults.appendChild(div);
+  });
+  kaSearchResults.style.display = 'block';
+});
+
+kaSearchInput.addEventListener('blur', () => {
+  setTimeout(() => { kaSearchResults.style.display = 'none'; }, 150);
+});
+
+// ── modal import ──────────────────────────────────────────────────────────
+const kaImportModalFile = document.getElementById('ka-import-modal-file');
+
+document.getElementById('ka-import-modal-btn').addEventListener('click', () => kaImportModalFile.click());
+
+kaImportModalFile.addEventListener('change', () => {
+  const file = kaImportModalFile.files[0];
+  if (!file) return;
+  const ext = file.name.split('.').pop().toLowerCase();
+  const reader = new FileReader();
+  reader.onload = evt => {
+    try {
+      let rows = [];
+      if (ext === 'csv' || ext === 'txt') {
+        evt.target.result.split(/\r?\n/).forEach(line => {
+          if (!line.trim()) return;
+          const parts = line.split(',').map(p => p.trim().replace(/^"|"$/g, '').trim());
+          if (parts[0]) rows.push(parts);
+        });
+      } else {
+        const wb = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
+          .map(r => [String(r[0] || '').trim(), String(r[1] || '').trim()]);
+      }
+      kaImportModalFile.value = '';
+      const { matched, missing } = applyImportRows(rows);
+      importStatus.textContent = missing.length === 0
+        ? `✓ ${matched} imported`
+        : `✓ ${matched} imported, ${missing.length} not found`;
+      if (missing.length) console.warn('Import: not found:', missing);
+    } catch (err) {
+      console.error('Modal import error:', err);
+    }
+  };
+  if (ext === 'csv' || ext === 'txt') reader.readAsText(file, 'utf-8');
+  else reader.readAsArrayBuffer(file);
+});
+
+// ── modal export (reuses existing export logic) ───────────────────────────
+document.getElementById('ka-export-modal-btn').addEventListener('click', () => {
+  document.getElementById('export-btn').click();
+});
+
+// ── column resize ─────────────────────────────────────────────────────────
+let _kaColResizeInit = false;
+
+function kaInitColResize() {
+  if (_kaColResizeInit) return;
+  _kaColResizeInit = true;
+
+  document.querySelectorAll('#ka-table thead th').forEach((th, i, all) => {
+    if (i === all.length - 1) return;   // skip the remove-button column
+    const handle = document.createElement('div');
+    handle.className = 'ka-col-resize';
+    th.appendChild(handle);
+
+    handle.addEventListener('mousedown', e => {
+      e.preventDefault();
+      const startX = e.clientX;
+      const startW = th.offsetWidth;
+      handle.classList.add('dragging');
+
+      function onMove(e) {
+        th.style.width    = Math.max(40, startW + (e.clientX - startX)) + 'px';
+        th.style.minWidth = th.style.width;
+      }
+      function onUp() {
+        handle.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+      }
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    });
+  });
+}
+
+// ── open / close wiring ───────────────────────────────────────────────────
+document.getElementById('ka-open-btn').addEventListener('click', kaOpen);
+document.getElementById('ka-close-btn').addEventListener('click', kaClose);
+document.getElementById('ka-done-btn').addEventListener('click', kaClose);
+
+// Close on overlay click (outside the modal box)
+kaOverlay.addEventListener('click', e => { if (e.target === kaOverlay) kaClose(); });
+
+// Close on Escape
+document.addEventListener('keydown', e => { if (e.key === 'Escape') kaClose(); });
+
+
+// ════════════════════════════════════════════════════════════════════════
+// 4.  LOGIC DIAGRAM (Plotly)
 // ════════════════════════════════════════════════════════════════════════
 
 // ── global state ────────────────────────────────────────────────────────
 let currentFloatFilter = Infinity;   // max float days to show (slider value)
-let showFloatLabels = false;
-let lineWeightMode = 'uniform';      // 'uniform' | 'float' | 'downstream'
+let showFloatLabels = true;
+let lineWeightMode = 'float';        // 'uniform' | 'float' | 'downstream'
 
 // ── controls wiring ─────────────────────────────────────────────────────
 const floatSlider = document.getElementById('float-slider');
@@ -556,22 +896,29 @@ function computeLayout(keyIds, dateField) {
 }
 
 // Line width calculation
-function edgeWidth(conn) {
+// localMaxF / localMinF: optional float range from the current diagram connections
+// (when provided, normalizes within the visible range for better contrast)
+function edgeWidth(conn, localMinF, localMaxF) {
   if (lineWeightMode === 'uniform') return 2;
   if (lineWeightMode === 'float') {
     const srcFloat = taskById[conn.src]?.float_days;
     const tgtFloat = taskById[conn.tgt]?.float_days;
     const f = Math.min(srcFloat ?? 999, tgtFloat ?? 999);
-    const maxF = Math.max(1, maxFloat);
-    // Lower float → thicker line (range 1–5)
-    return 1 + 4 * (1 - Math.min(f, maxF) / maxF);
+    const minF = localMinF ?? 0;
+    const maxF = localMaxF ?? Math.max(1, maxFloat);
+    const span = Math.max(1, maxF - minF);
+    // Log scale: high resolution near critical path, compressed at large floats
+    const logF    = Math.log(Math.min(Math.max(f - minF, 0), span) + 1);
+    const logSpan = Math.log(span + 1);
+    return 1 + 4 * (1 - logF / logSpan);
   }
   if (lineWeightMode === 'downstream') {
-    // Find the downstream_len for this edge pair from payload
     const edge = PAYLOAD.edges.find(e => e.src_id === conn.src && e.tgt_id === conn.tgt);
     const ds = edge ? edge.downstream_len : 1;
-    const maxDs = Math.max(1, ...PAYLOAD.edges.map(e => e.downstream_len));
-    return 1 + 4 * (ds / maxDs);
+    const minDs = localMinF ?? 0;
+    const maxDs = localMaxF ?? Math.max(1, ...PAYLOAD.edges.map(e => e.downstream_len));
+    const span = Math.max(1, maxDs - minDs);
+    return 1 + 4 * (Math.min(Math.max(ds - minDs, 0), span) / span);
   }
   return 2;
 }
@@ -579,13 +926,14 @@ function edgeWidth(conn) {
 // ── diagram render state (rebuilt each rebuildDiagram call) ─────────────
 let _diag = null;
 // _diag = {
-//   filteredIds,          // ordered array of task ids shown
-//   connections,          // array of {src, tgt}
-//   connLineTraceIdxs,    // per-connection: trace index of its line (-1 if skipped)
-//   connLabelTraceIdxs,   // per-connection: trace index of its float label (-1 if none)
-//   nodeTraceIdx,         // trace index of the node scatter
-//   baseNodeColors,       // per-node fill colors (for reset)
-//   baseEdgeColors,       // per-connection base line colors (for reset)
+//   filteredIds,     // ordered array of task ids shown
+//   connections,     // array of {src, tgt}
+//   positions,       // id -> {x, y, date}
+//   bgLineTI,        // per-connection: trace index of background line (-1 if skipped)
+//   ovLineTI,        // per-connection: trace index of overlay line (-1 if skipped)
+//   nodeTraceIdx,    // trace index of the node scatter
+//   baseNodeColors,  // per-node fill colors (for reset)
+//   baseEdgeColors,  // per-connection base line colors (for reset)
 // }
 
 let _activeHighlightId = null;  // currently clicked node in the diagram
@@ -602,11 +950,11 @@ const _NODE_FADED   = 'rgba(180,180,180,0.35)';
 
 // Main diagram builder
 // Trace rendering order (z-order = index order in Plotly):
-//   Pass 1: background line traces        — faded on hover
-//   Pass 2: background label traces       — faded on hover
-//   Pass 3: overlay line traces (opacity=0 at rest)  — shown highlighted on hover, always on top of Pass 1
-//   Pass 4: overlay label traces (opacity=0 at rest) — shown highlighted on hover, always on top of Pass 2
-//   Pass 5: node trace                    — always last = always on top
+//   Pass 1: background line traces   — faded on click
+//   Pass 2: overlay line traces      — opacity=0 at rest; shown highlighted on click, always on top of Pass 1
+//   Pass 3: node trace               — always last = always on top
+// Float labels are rendered as Plotly annotations (layout-level) on click,
+// cleared on deselect — annotations support native bgcolor rectangle.
 function rebuildDiagram() {
   const plotDiv = document.getElementById('plotly-div');
 
@@ -639,38 +987,48 @@ function rebuildDiagram() {
   const connections = findConnections(filteredIds);
   const positions = computeLayout(filteredIds, 'early_start');
 
-  const traces = [];
-  const bgLineTI = [];    // Pass 1: background edge trace index per connection
-
-  const ovLineTI = [];    // Pass 3: overlay edge trace index per connection
-  const ovLabelTI = [];   // Pass 4: overlay label trace index (-1 if none); halo = ovLabelTI-1
-  const baseEdgeColors = [];
-
-  // Helper: label text for a connection
-  function connLabel(conn) {
-    const f = taskById[conn.src]?.float_days;
-    return f != null ? Math.round(f) + 'd' : '?';
+  // Compute local float/downstream range from visible connections so width
+  // normalization spans the full 1–5px range regardless of schedule extremes.
+  let localMinF = 0, localMaxF = 1;
+  if (lineWeightMode === 'float' && connections.length) {
+    const connFloats = connections.map(conn => {
+      const sf = taskById[conn.src]?.float_days ?? 0;
+      const tf = taskById[conn.tgt]?.float_days ?? 0;
+      return Math.min(sf, tf);
+    });
+    localMinF = Math.min(...connFloats);
+    localMaxF = Math.max(...connFloats);
+    if (localMaxF === localMinF) { localMinF = 0; }  // avoid zero span
+  } else if (lineWeightMode === 'downstream' && connections.length) {
+    const dsVals = connections.map(conn => {
+      const edge = PAYLOAD.edges.find(e => e.src_id === conn.src && e.tgt_id === conn.tgt);
+      return edge ? edge.downstream_len : 1;
+    });
+    localMinF = Math.min(...dsVals);
+    localMaxF = Math.max(...dsVals);
+    if (localMaxF === localMinF) { localMinF = 0; }
   }
 
-  // ── Pass 1: background line traces ────────────────────────────────────
+  const traces = [];
+  const bgLineTI = [];    // Pass 1: background edge trace index per connection
+  const ovLineTI = [];    // Pass 2: overlay edge trace index per connection
+  const baseEdgeColors = [];
+
+  // ── Pass 1: background line traces (always uniform — weight applies on click) ──
   connections.forEach(conn => {
     const sPos = positions[conn.src], tPos = positions[conn.tgt];
     if (!sPos || !tPos) { bgLineTI.push(-1); baseEdgeColors.push(_EDGE_BASE); return; }
-    const width = edgeWidth(conn);
     baseEdgeColors.push(_EDGE_BASE);
     bgLineTI.push(traces.length);
     traces.push({
       type: 'scatter', mode: 'lines',
       x: [sPos.x, tPos.x, null], y: [sPos.y, tPos.y, null],
-      line: { color: _EDGE_BASE, width },
+      line: { color: _EDGE_BASE, width: 1 },
       hoverinfo: 'none', showlegend: false,
     });
   });
 
-  // Pass 2 removed: float labels are only shown on clicked connections (overlay),
-  // never on the full unselected diagram.
-
-  // ── Pass 3: overlay line traces (opacity=0, rendered above Pass 1) ────
+  // ── Pass 2: overlay line traces (opacity=0, shown with variable width on click) ──
   connections.forEach(conn => {
     const sPos = positions[conn.src], tPos = positions[conn.tgt];
     if (!sPos || !tPos) { ovLineTI.push(-1); return; }
@@ -678,35 +1036,21 @@ function rebuildDiagram() {
     traces.push({
       type: 'scatter', mode: 'lines',
       x: [sPos.x, tPos.x, null], y: [sPos.y, tPos.y, null],
-      line: { color: _EDGE_BASE, width: edgeWidth(conn) },
+      line: { color: _EDGE_BASE, width: 1 },
       opacity: 0, hoverinfo: 'none', showlegend: false,
     });
   });
 
-  // ── Pass 4: overlay label traces (opacity=0, rendered above Pass 2) ───
-  if (showFloatLabels) {
-    connections.forEach(conn => {
-      const sPos = positions[conn.src], tPos = positions[conn.tgt];
-      if (!sPos || !tPos) { ovLabelTI.push(-1); return; }
-      const mx = (sPos.x + tPos.x) / 2, my = (sPos.y + tPos.y) / 2;
-      const lbl = connLabel(conn);
-      traces.push({ type: 'scatter', mode: 'text', x: [mx], y: [my], text: [lbl],
-        textfont: { color: 'white', size: 12 }, opacity: 0, hoverinfo: 'none', showlegend: false });
-      ovLabelTI.push(traces.length);
-      traces.push({ type: 'scatter', mode: 'text', x: [mx], y: [my], text: [lbl],
-        textfont: { color: [_EDGE_BASE], size: 10 }, opacity: 0, hoverinfo: 'none', showlegend: false });
-    });
-  } else {
-    connections.forEach(() => ovLabelTI.push(-1));
-  }
+  // Float labels are rendered as Plotly annotations (not traces) so they
+  // get a proper bgcolor rectangle. Added/removed in _applyHighlight/_clearHighlight.
 
-  // ── Pass 5: node trace (always last = always on top) ──────────────────
+  // ── Pass 3: node trace (always last = always on top) ─────────────────
   const nodeTraceIdx = traces.length;
   const nodeX = [], nodeY = [], nodeText = [], baseNodeColors = [], nodeHover = [];
   filteredIds.forEach(id => {
     const pos = positions[id]; if (!pos) return;
     const t = taskById[id];
-    nodeX.push(pos.x); nodeY.push(pos.y); nodeText.push(t.code);
+    nodeX.push(pos.x); nodeY.push(pos.y); nodeText.push(getLabelForTask(t));
     baseNodeColors.push(nodeColor(t));
     const floatStr = t.float_days != null ? `Float: ${Math.round(t.float_days)}d` : '';
     nodeHover.push(`<b>${t.code}</b><br>${t.name}<br>${floatStr}`);
@@ -744,11 +1088,19 @@ function rebuildDiagram() {
              zeroline: false, tickfont: { size: 9 }, color: '#666' },
     yaxis: { visible: false },
     margin: { l: 50, r: 20, t: 30, b: 40 }, hovermode: 'closest',
+    dragmode: 'pan',
   };
 
-  Plotly.react(plotDiv, traces, layout, { responsive: true, displayModeBar: false });
+  Plotly.react(plotDiv, traces, layout, {
+    responsive: true,
+    scrollZoom: true,
+    displayModeBar: 'hover',
+    modeBarButtonsToRemove: ['select2d', 'lasso2d', 'autoScale2d', 'toImage'],
+    displaylogo: false,
+  });
 
-  _diag = { filteredIds, connections, bgLineTI, ovLineTI, ovLabelTI,
+  _diag = { filteredIds, connections, positions, bgLineTI, ovLineTI,
+            localMinF, localMaxF,
             nodeTraceIdx, baseNodeColors, baseEdgeColors };
 
   // ── click interactions on diagram ─────────────────────────────────────
@@ -758,9 +1110,10 @@ function rebuildDiagram() {
   plotDiv.removeAllListeners('plotly_click');
 
   function _applyHighlight(selectedId) {
-    const { filteredIds: fIds, connections: conns,
+    const { filteredIds: fIds, connections: conns, positions: pos,
             bgLineTI: bLTI,
-            ovLineTI: oLTI, ovLabelTI: oLblTI,
+            ovLineTI: oLTI,
+            localMinF, localMaxF,
             nodeTraceIdx: nti, baseNodeColors: bnc } = _diag;
 
     const succConnSet = new Set(), predConnSet = new Set();
@@ -788,59 +1141,72 @@ function rebuildDiagram() {
         ovHighColors.push(succConnSet.has(ci) ? _EDGE_SUCC : _EDGE_PRED);
       }
     });
-    if (ovHighTIs.length)
-      Plotly.restyle(plotDiv, { 'line.color': ovHighColors, 'opacity': ovHighTIs.map(() => 1) }, ovHighTIs);
-
-    // Show overlay label traces for pred/succ connections
-    if (showFloatLabels) {
-      const ovLblTIs = [], ovLblColors = [], ovHaloTIs = [];
-      conns.forEach((conn, ci) => {
-        const ti = oLblTI[ci]; if (ti < 0) return;
-        if (succConnSet.has(ci) || predConnSet.has(ci)) {
-          ovLblTIs.push(ti);
-          ovLblColors.push([succConnSet.has(ci) ? _EDGE_SUCC : _EDGE_PRED]);
-          ovHaloTIs.push(ti - 1);
-        }
+    if (ovHighTIs.length) {
+      const ovHighWidths = ovHighTIs.map((ti, i) => {
+        const ci = oLTI.indexOf(ti);
+        return edgeWidth(conns[ci], localMinF, localMaxF);
       });
-      if (ovLblTIs.length) {
-        Plotly.restyle(plotDiv, { 'textfont.color': ovLblColors, 'opacity': ovLblTIs.map(() => 1) }, ovLblTIs);
-        Plotly.restyle(plotDiv, { 'opacity': ovHaloTIs.map(() => 1) }, ovHaloTIs);
-      }
+      Plotly.restyle(plotDiv, {
+        'line.color': ovHighColors,
+        'line.width': ovHighWidths,
+        'opacity': ovHighTIs.map(() => 1),
+      }, ovHighTIs);
+    }
+
+    // Float labels as Plotly annotations (proper bgcolor rectangle support)
+    if (showFloatLabels) {
+      const annotations = [];
+      conns.forEach((conn, ci) => {
+        if (!succConnSet.has(ci) && !predConnSet.has(ci)) return;
+        const sPos = pos[conn.src], tPos = pos[conn.tgt];
+        if (!sPos || !tPos) return;
+        const mx = (sPos.x + tPos.x) / 2, my = (sPos.y + tPos.y) / 2;
+        const sf = taskById[conn.src]?.float_days;
+        const tf = taskById[conn.tgt]?.float_days;
+        const f = (sf != null && tf != null) ? Math.min(sf, tf) : (sf ?? tf);
+        const lbl = f != null ? Math.round(f) + 'd' : '?';
+        const color = succConnSet.has(ci) ? _EDGE_SUCC : _EDGE_PRED;
+        annotations.push({
+          x: mx, y: my, xref: 'x', yref: 'y',
+          text: lbl, showarrow: false,
+          font: { color, size: 10 },
+          bgcolor: 'rgba(255,255,255,0.9)',
+          borderpad: 3,
+        });
+      });
+      Plotly.relayout(plotDiv, { annotations });
     }
 
     // Restyle node trace
-    const newTxtC = [], newOutC = [], newMrkC = [];
+    const newTxtC = [], newTxtW = [], newOutC = [], newMrkC = [];
     fIds.forEach((id, i) => {
       if (id === selectedId) {
-        newTxtC.push(_NODE_HOVERED); newOutC.push(_NODE_HOVERED); newMrkC.push(bnc[i]);
+        newTxtC.push(_NODE_HOVERED); newTxtW.push(700);
+        newOutC.push(_NODE_HOVERED); newMrkC.push(bnc[i]);
       } else if (succNodeSet.has(id)) {
-        newTxtC.push(_NODE_SUCC); newOutC.push(_NODE_SUCC); newMrkC.push(bnc[i]);
+        newTxtC.push(_NODE_SUCC); newTxtW.push(400);
+        newOutC.push(_NODE_SUCC); newMrkC.push(bnc[i]);
       } else if (predNodeSet.has(id)) {
-        newTxtC.push(_NODE_PRED); newOutC.push(_NODE_PRED); newMrkC.push(bnc[i]);
+        newTxtC.push(_NODE_PRED); newTxtW.push(400);
+        newOutC.push(_NODE_PRED); newMrkC.push(bnc[i]);
       } else {
-        newTxtC.push(_NODE_FADED); newOutC.push(_NODE_FADED); newMrkC.push(_NODE_FADED);
+        newTxtC.push(_NODE_FADED); newTxtW.push(400);
+        newOutC.push(_NODE_FADED); newMrkC.push(_NODE_FADED);
       }
     });
     Plotly.restyle(plotDiv, {
-      'textfont.color': [newTxtC], 'marker.color': [newMrkC], 'marker.line.color': [newOutC],
+      'textfont.color': [newTxtC], 'textfont.weight': [newTxtW],
+      'marker.color': [newMrkC], 'marker.line.color': [newOutC],
     }, [nti]);
 
-    // Sync Cytoscape
-    cy.elements().removeClass('highlighted highlighted-succ highlighted-pred faded');
-    const cyNode = cy.getElementById(selectedId);
-    if (cyNode.length) {
-      cy.elements().addClass('faded');
-      cyNode.removeClass('faded').addClass('highlighted');
-      cyNode.outgoers('edge').removeClass('faded').addClass('highlighted-succ');
-      cyNode.incomers('edge').removeClass('faded').addClass('highlighted-pred');
-      cyNode.neighborhood('node').removeClass('faded').addClass('highlighted');
-    }
+    // Sync explorer
+    focusExplorer(selectedId);
   }
 
   function _clearHighlight() {
     const { filteredIds: fIds, connections: conns,
             bgLineTI: bLTI,
-            ovLineTI: oLTI, ovLabelTI: oLblTI,
+            ovLineTI: oLTI,
             nodeTraceIdx: nti, baseNodeColors: bnc, baseEdgeColors: bec } = _diag;
 
     const bgRestoreTIs = [], bgRestoreColors = [];
@@ -855,23 +1221,17 @@ function rebuildDiagram() {
       Plotly.restyle(plotDiv, { 'opacity': allOvLTIs.map(() => 0) }, allOvLTIs);
 
     if (showFloatLabels) {
-      const allOvLblTIs = [], allOvHaloTIs = [];
-      conns.forEach((conn, ci) => {
-        if (oLblTI[ci] >= 0) { allOvLblTIs.push(oLblTI[ci]); allOvHaloTIs.push(oLblTI[ci] - 1); }
-      });
-      if (allOvLblTIs.length)
-        Plotly.restyle(plotDiv, { 'opacity': allOvLblTIs.map(() => 0) }, allOvLblTIs);
-      if (allOvHaloTIs.length)
-        Plotly.restyle(plotDiv, { 'opacity': allOvHaloTIs.map(() => 0) }, allOvHaloTIs);
+      Plotly.relayout(plotDiv, { annotations: [] });
     }
 
     Plotly.restyle(plotDiv, {
       'textfont.color': [fIds.map(() => _NODE_DEFAULT)],
+      'textfont.weight': [fIds.map(() => 400)],
       'marker.color': [bnc.slice()],
       'marker.line.color': [fIds.map(() => _NODE_DEFAULT)],
     }, [nti]);
 
-    cy.elements().removeClass('highlighted highlighted-succ highlighted-pred faded');
+    clearExplorer();
   }
 
   plotDiv.on('plotly_click', evt => {
