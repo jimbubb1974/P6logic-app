@@ -641,7 +641,7 @@ function rebuildDiagram() {
 
   const traces = [];
   const bgLineTI = [];    // Pass 1: background edge trace index per connection
-  const bgLabelTI = [];   // Pass 2: background label trace index (-1 if none); halo = bgLabelTI-1
+
   const ovLineTI = [];    // Pass 3: overlay edge trace index per connection
   const ovLabelTI = [];   // Pass 4: overlay label trace index (-1 if none); halo = ovLabelTI-1
   const baseEdgeColors = [];
@@ -667,22 +667,8 @@ function rebuildDiagram() {
     });
   });
 
-  // ── Pass 2: background label traces (halo + colored) ──────────────────
-  if (showFloatLabels) {
-    connections.forEach(conn => {
-      const sPos = positions[conn.src], tPos = positions[conn.tgt];
-      if (!sPos || !tPos) { bgLabelTI.push(-1); return; }
-      const mx = (sPos.x + tPos.x) / 2, my = (sPos.y + tPos.y) / 2;
-      const lbl = connLabel(conn);
-      traces.push({ type: 'scatter', mode: 'text', x: [mx], y: [my], text: [lbl],
-        textfont: { color: 'white', size: 12 }, hoverinfo: 'none', showlegend: false });
-      bgLabelTI.push(traces.length);
-      traces.push({ type: 'scatter', mode: 'text', x: [mx], y: [my], text: [lbl],
-        textfont: { color: [_EDGE_BASE], size: 10 }, hoverinfo: 'none', showlegend: false });
-    });
-  } else {
-    connections.forEach(() => bgLabelTI.push(-1));
-  }
+  // Pass 2 removed: float labels are only shown on clicked connections (overlay),
+  // never on the full unselected diagram.
 
   // ── Pass 3: overlay line traces (opacity=0, rendered above Pass 1) ────
   connections.forEach(conn => {
@@ -762,7 +748,7 @@ function rebuildDiagram() {
 
   Plotly.react(plotDiv, traces, layout, { responsive: true, displayModeBar: false });
 
-  _diag = { filteredIds, connections, bgLineTI, bgLabelTI, ovLineTI, ovLabelTI,
+  _diag = { filteredIds, connections, bgLineTI, ovLineTI, ovLabelTI,
             nodeTraceIdx, baseNodeColors, baseEdgeColors };
 
   // ── click interactions on diagram ─────────────────────────────────────
@@ -773,7 +759,7 @@ function rebuildDiagram() {
 
   function _applyHighlight(selectedId) {
     const { filteredIds: fIds, connections: conns,
-            bgLineTI: bLTI, bgLabelTI: bLblTI,
+            bgLineTI: bLTI,
             ovLineTI: oLTI, ovLabelTI: oLblTI,
             nodeTraceIdx: nti, baseNodeColors: bnc } = _diag;
 
@@ -792,13 +778,6 @@ function rebuildDiagram() {
     const bgLTIs = bLTI.filter(i => i >= 0);
     if (bgLTIs.length)
       Plotly.restyle(plotDiv, { 'line.color': bgLTIs.map(() => _EDGE_FADED) }, bgLTIs);
-
-    // Fade background label traces
-    if (showFloatLabels) {
-      const bgLblTIs = bLblTI.filter(i => i >= 0);
-      if (bgLblTIs.length)
-        Plotly.restyle(plotDiv, { 'textfont.color': bgLblTIs.map(() => ['rgba(0,0,0,0)']) }, bgLblTIs);
-    }
 
     // Show overlay line traces for pred/succ connections
     const ovHighTIs = [], ovHighColors = [];
@@ -860,7 +839,7 @@ function rebuildDiagram() {
 
   function _clearHighlight() {
     const { filteredIds: fIds, connections: conns,
-            bgLineTI: bLTI, bgLabelTI: bLblTI,
+            bgLineTI: bLTI,
             ovLineTI: oLTI, ovLabelTI: oLblTI,
             nodeTraceIdx: nti, baseNodeColors: bnc, baseEdgeColors: bec } = _diag;
 
@@ -870,15 +849,6 @@ function rebuildDiagram() {
     });
     if (bgRestoreTIs.length)
       Plotly.restyle(plotDiv, { 'line.color': bgRestoreColors }, bgRestoreTIs);
-
-    if (showFloatLabels) {
-      const bgLblTIs = [], bgLblColors = [];
-      conns.forEach((conn, ci) => {
-        if (bLblTI[ci] >= 0) { bgLblTIs.push(bLblTI[ci]); bgLblColors.push([_EDGE_BASE]); }
-      });
-      if (bgLblTIs.length)
-        Plotly.restyle(plotDiv, { 'textfont.color': bgLblColors }, bgLblTIs);
-    }
 
     const allOvLTIs = oLTI.filter(i => i >= 0);
     if (allOvLTIs.length)
