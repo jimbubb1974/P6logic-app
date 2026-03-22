@@ -39,7 +39,10 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a2e; color: #
 /* line-weight selector */
 #lw-select { background: #0f3460; border: 1px solid #444; color: #e0e0e0; font-size: 12px; border-radius: 4px; padding: 2px 4px; }
 
-/* export button */
+/* import / export buttons */
+#import-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #3498db; background: transparent; color: #3498db; cursor: pointer; }
+#import-btn:hover { background: #3498db; color: #fff; }
+#import-status { font-size: 11px; color: #888; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #export-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #27ae60; background: transparent; color: #27ae60; cursor: pointer; }
 #export-btn:hover { background: #27ae60; color: #fff; }
 
@@ -141,6 +144,12 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a2e; color: #
 
   <button class="tog-btn" id="float-labels-btn">Float labels</button>
   <button class="tog-btn active" id="show-inter-btn">Key only</button>
+
+  <div class="tb-sep"></div>
+
+  <button id="import-btn">⬆ Import key activities</button>
+  <span id="import-status"></span>
+  <input type="file" id="import-file" accept=".xlsx,.xls,.csv" style="display:none">
 
   <div class="tb-sep"></div>
 

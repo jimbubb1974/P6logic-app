@@ -247,6 +247,96 @@ function buildCategoryLegend() {
 }
 buildCategoryLegend();
 
+// ── import key activities ──────────────────────────────────────────────────
+const importBtn    = document.getElementById('import-btn');
+const importFile   = document.getElementById('import-file');
+const importStatus = document.getElementById('import-status');
+
+// Header labels to skip (same as P6logic Python side)
+const _HEADER_LABELS = new Set([
+  'activity id','activity_id','task_code','id','code','activity','activity code'
+]);
+
+importBtn.addEventListener('click', () => importFile.click());
+
+importFile.addEventListener('change', () => {
+  const file = importFile.files[0];
+  if (!file) return;
+  importStatus.textContent = 'Reading…';
+
+  const reader = new FileReader();
+  const ext = file.name.split('.').pop().toLowerCase();
+
+  reader.onload = evt => {
+    try {
+      let rows = [];   // [ [code, shorthand?], ... ]
+
+      if (ext === 'csv' || ext === 'txt') {
+        // Parse CSV manually
+        const text = evt.target.result;
+        text.split(/\r?\n/).forEach(line => {
+          if (!line.trim()) return;
+          // Handle quoted fields minimally
+          const parts = line.split(',').map(p => p.trim().replace(/^"|"$/g, '').trim());
+          if (parts[0]) rows.push(parts);
+        });
+      } else {
+        // Excel: use SheetJS
+        const data = new Uint8Array(evt.target.result);
+        const wb = XLSX.read(data, { type: 'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+        rows = raw.map(r => [String(r[0] || '').trim(), String(r[1] || '').trim()]);
+      }
+
+      // Drop header row if first cell matches known labels
+      if (rows.length && _HEADER_LABELS.has(rows[0][0].toLowerCase())) {
+        rows = rows.slice(1);
+      }
+
+      // Match codes against schedule data
+      let matched = 0, missing = [];
+      // Clear existing selection first
+      keySet.clear();
+      cy.nodes().removeClass('selected-key');
+
+      rows.forEach(([code]) => {
+        if (!code) return;
+        const task = taskByCode[code];
+        if (task) {
+          keySet.add(task.id);
+          cy.getElementById(task.id).addClass('selected-key');
+          matched++;
+        } else {
+          missing.push(code);
+        }
+      });
+
+      // Reset the file input so the same file can be re-imported if needed
+      importFile.value = '';
+
+      updateSelectedCount();
+      rebuildDiagram();
+
+      if (missing.length === 0) {
+        importStatus.textContent = `✓ ${matched} imported`;
+      } else {
+        importStatus.textContent = `✓ ${matched} imported, ${missing.length} not found`;
+        console.warn('Import: codes not found in schedule:', missing);
+      }
+    } catch (err) {
+      importStatus.textContent = '✗ Error reading file';
+      console.error('Import error:', err);
+    }
+  };
+
+  if (ext === 'csv' || ext === 'txt') {
+    reader.readAsText(file, 'utf-8');
+  } else {
+    reader.readAsArrayBuffer(file);
+  }
+});
+
 // ── panel resize ───────────────────────────────────────────────────────────
 (function initResize() {
   const handle  = document.getElementById('resize-handle');
