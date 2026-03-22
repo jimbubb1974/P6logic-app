@@ -574,6 +574,28 @@ function edgeWidth(conn) {
   return 2;
 }
 
+// ── diagram render state (rebuilt each rebuildDiagram call) ─────────────
+let _diag = null;
+// _diag = {
+//   filteredIds,          // ordered array of task ids shown
+//   connections,          // array of {src, tgt}
+//   connLineTraceIdxs,    // per-connection: trace index of its line (-1 if skipped)
+//   connLabelTraceIdxs,   // per-connection: trace index of its float label (-1 if none)
+//   nodeTraceIdx,         // trace index of the node scatter
+//   baseNodeColors,       // per-node fill colors (for reset)
+//   baseEdgeColors,       // per-connection base line colors (for reset)
+// }
+
+const _EDGE_BASE    = '#2a5a8a';
+const _EDGE_SUCC    = '#3498db';   // blue
+const _EDGE_PRED    = '#9b59b6';   // purple
+const _EDGE_FADED   = 'rgba(42,90,138,0.08)';
+const _NODE_DEFAULT = '#e0e0e0';
+const _NODE_HOVERED = '#e94560';   // red
+const _NODE_SUCC    = '#3498db';   // blue
+const _NODE_PRED    = '#9b59b6';   // purple
+const _NODE_FADED   = 'rgba(150,150,150,0.15)';
+
 // Main diagram builder
 function rebuildDiagram() {
   const plotDiv = document.getElementById('plotly-div');
@@ -585,6 +607,8 @@ function rebuildDiagram() {
     if (currentFloatFilter === Infinity) return true;
     return (t.float_days ?? Infinity) <= currentFloatFilter;
   });
+
+  _diag = null;
 
   if (filteredIds.length < 2) {
     Plotly.purge(plotDiv);
@@ -607,48 +631,54 @@ function rebuildDiagram() {
   const positions = computeLayout(filteredIds, 'early_start');
 
   const traces = [];
+  const connLineTraceIdxs = [];
+  const connLabelTraceIdxs = [];
+  const baseEdgeColors = [];
 
   // ── draw edges ────────────────────────────────────────────────────────
   connections.forEach(conn => {
     const sPos = positions[conn.src];
     const tPos = positions[conn.tgt];
-    if (!sPos || !tPos) return;
+    if (!sPos || !tPos) {
+      connLineTraceIdxs.push(-1);
+      connLabelTraceIdxs.push(-1);
+      return;
+    }
 
     const width = edgeWidth(conn);
-    const srcFloat = taskById[conn.src]?.float_days;
-    const tgtFloat = taskById[conn.tgt]?.float_days;
-    const floatLabel = showFloatLabels
-      ? `${srcFloat != null ? srcFloat + 'd' : '?'} → ${tgtFloat != null ? tgtFloat + 'd' : '?'}`
-      : '';
-
-    const midX = (sPos.x + tPos.x) / 2;
-    const midY = (sPos.y + tPos.y) / 2;
-
-    // Line trace
+    baseEdgeColors.push(_EDGE_BASE);
+    connLineTraceIdxs.push(traces.length);
     traces.push({
       type: 'scatter', mode: 'lines',
       x: [sPos.x, tPos.x, null],
       y: [sPos.y, tPos.y, null],
-      line: { color: '#2a5a8a', width },
+      line: { color: _EDGE_BASE, width },
       hoverinfo: 'none', showlegend: false,
-      _connSrc: conn.src, _connTgt: conn.tgt,
     });
 
-    // Float label (mid-point annotation text)
     if (showFloatLabels) {
+      const midX = (sPos.x + tPos.x) / 2;
+      const midY = (sPos.y + tPos.y) / 2;
+      const srcFloat = taskById[conn.src]?.float_days;
+      const tgtFloat = taskById[conn.tgt]?.float_days;
+      const label = `${srcFloat != null ? srcFloat + 'd' : '?'} → ${tgtFloat != null ? tgtFloat + 'd' : '?'}`;
+      connLabelTraceIdxs.push(traces.length);
       traces.push({
         type: 'scatter', mode: 'text',
         x: [midX], y: [midY],
-        text: [floatLabel],
-        textfont: { color: '#3498db', size: 9 },
+        text: [label],
+        textfont: { color: [_EDGE_BASE], size: 9 },
         hoverinfo: 'none', showlegend: false,
-        _isLabel: true,
       });
+    } else {
+      connLabelTraceIdxs.push(-1);
     }
   });
 
   // ── draw nodes ────────────────────────────────────────────────────────
-  const nodeX = [], nodeY = [], nodeText = [], nodeColors = [], nodeHover = [];
+  const nodeTraceIdx = traces.length;
+  const nodeX = [], nodeY = [], nodeText = [], baseNodeColors = [], nodeHover = [];
+
   filteredIds.forEach(id => {
     const pos = positions[id];
     if (!pos) return;
@@ -656,21 +686,23 @@ function rebuildDiagram() {
     nodeX.push(pos.x);
     nodeY.push(pos.y);
     nodeText.push(t.code);
-    nodeColors.push(nodeColor(t));
+    baseNodeColors.push(nodeColor(t));
     const floatStr = t.float_days != null ? `Float: ${t.float_days}d` : '';
     nodeHover.push(`<b>${t.code}</b><br>${t.name}<br>${floatStr}`);
   });
 
+  const n = filteredIds.length;
   traces.push({
     type: 'scatter', mode: 'markers+text',
     x: nodeX, y: nodeY,
     text: nodeText,
     textposition: 'top center',
-    textfont: { color: '#e0e0e0', size: 10 },
+    // Use per-point arrays so restyle can change individual labels
+    textfont: { color: new Array(n).fill(_NODE_DEFAULT), size: 10 },
     marker: {
-      color: nodeColors,
+      color: baseNodeColors.slice(),
       size: 14,
-      line: { color: '#e0e0e0', width: 1.5 },
+      line: { color: new Array(n).fill(_NODE_DEFAULT), width: 1.5 },
     },
     hovertext: nodeHover,
     hoverinfo: 'text',
@@ -710,17 +742,99 @@ function rebuildDiagram() {
 
   Plotly.react(plotDiv, traces, layout, { responsive: true, displayModeBar: false });
 
-  // ── hover interactions on diagram ─────────────────────────────────────
-  plotDiv.removeAllListeners && plotDiv.removeAllListeners('plotly_hover');
-  plotDiv.on('plotly_hover', evt => {
-    const pt = evt.points[0];
-    const traceData = pt.data;
-    if (!traceData._isNodes) return;
+  // Save state for hover handler
+  _diag = {
+    filteredIds, connections,
+    connLineTraceIdxs, connLabelTraceIdxs,
+    nodeTraceIdx, baseNodeColors, baseEdgeColors,
+  };
 
-    const hoveredId = filteredIds[pt.pointIndex];
+  // ── hover interactions on diagram ─────────────────────────────────────
+  plotDiv.removeAllListeners('plotly_hover');
+  plotDiv.removeAllListeners('plotly_unhover');
+
+  plotDiv.on('plotly_hover', evt => {
+    if (!_diag) return;
+    const pt = evt.points[0];
+    if (!pt.data._isNodes) return;
+
+    const hoveredIdx = pt.pointIndex;
+    const hoveredId = _diag.filteredIds[hoveredIdx];
     if (!hoveredId) return;
 
-    // Also sync cytoscape highlight
+    const { filteredIds: fIds, connections: conns, connLineTraceIdxs: clti,
+            connLabelTraceIdxs: cllti, nodeTraceIdx: nti, baseNodeColors: bnc } = _diag;
+
+    // Classify each connection relative to hovered node
+    const succConnSet = new Set();
+    const predConnSet = new Set();
+    conns.forEach((conn, ci) => {
+      if (conn.src === hoveredId) succConnSet.add(ci);
+      if (conn.tgt === hoveredId) predConnSet.add(ci);
+    });
+
+    // Classify each node
+    const succNodeSet = new Set();
+    const predNodeSet = new Set();
+    conns.forEach((conn, ci) => {
+      if (succConnSet.has(ci)) succNodeSet.add(conn.tgt);
+      if (predConnSet.has(ci)) predNodeSet.add(conn.src);
+    });
+
+    // ── restyle edge line traces (one call for all) ───────────────────
+    const edgeTIs = [], edgeColors = [];
+    conns.forEach((conn, ci) => {
+      const ti = clti[ci];
+      if (ti < 0) return;
+      edgeTIs.push(ti);
+      if (succConnSet.has(ci))      edgeColors.push(_EDGE_SUCC);
+      else if (predConnSet.has(ci)) edgeColors.push(_EDGE_PRED);
+      else                          edgeColors.push(_EDGE_FADED);
+    });
+    if (edgeTIs.length) Plotly.restyle(plotDiv, { 'line.color': edgeColors }, edgeTIs);
+
+    // ── restyle float label traces ────────────────────────────────────
+    if (showFloatLabels) {
+      const lblTIs = [], lblColors = [];
+      conns.forEach((conn, ci) => {
+        const ti = cllti[ci];
+        if (ti < 0) return;
+        lblTIs.push(ti);
+        if (succConnSet.has(ci))      lblColors.push([_EDGE_SUCC]);
+        else if (predConnSet.has(ci)) lblColors.push([_EDGE_PRED]);
+        else                          lblColors.push(['rgba(42,90,138,0.05)']);
+      });
+      if (lblTIs.length) Plotly.restyle(plotDiv, { 'textfont.color': lblColors }, lblTIs);
+    }
+
+    // ── restyle node trace (per-point arrays) ─────────────────────────
+    const newTextColors = [], newOutlineColors = [], newMarkerColors = [];
+    fIds.forEach((id, i) => {
+      if (id === hoveredId) {
+        newTextColors.push(_NODE_HOVERED);
+        newOutlineColors.push(_NODE_HOVERED);
+        newMarkerColors.push(bnc[i]);
+      } else if (succNodeSet.has(id)) {
+        newTextColors.push(_NODE_SUCC);
+        newOutlineColors.push(_NODE_SUCC);
+        newMarkerColors.push(bnc[i]);
+      } else if (predNodeSet.has(id)) {
+        newTextColors.push(_NODE_PRED);
+        newOutlineColors.push(_NODE_PRED);
+        newMarkerColors.push(bnc[i]);
+      } else {
+        newTextColors.push(_NODE_FADED);
+        newOutlineColors.push(_NODE_FADED);
+        newMarkerColors.push(_NODE_FADED);
+      }
+    });
+    Plotly.restyle(plotDiv, {
+      'textfont.color': [newTextColors],
+      'marker.color':   [newMarkerColors],
+      'marker.line.color': [newOutlineColors],
+    }, [nti]);
+
+    // ── sync Cytoscape ────────────────────────────────────────────────
     cy.elements().removeClass('highlighted highlighted-succ highlighted-pred faded');
     const cyNode = cy.getElementById(hoveredId);
     if (cyNode.length) {
@@ -731,7 +845,42 @@ function rebuildDiagram() {
       cyNode.neighborhood('node').removeClass('faded').addClass('highlighted');
     }
   });
+
   plotDiv.on('plotly_unhover', () => {
+    if (!_diag) return;
+    const { filteredIds: fIds, connections: conns, connLineTraceIdxs: clti,
+            connLabelTraceIdxs: cllti, nodeTraceIdx: nti,
+            baseNodeColors: bnc, baseEdgeColors: bec } = _diag;
+
+    // Restore edge colors
+    const edgeTIs = [], edgeColors = [];
+    conns.forEach((conn, ci) => {
+      const ti = clti[ci];
+      if (ti < 0) return;
+      edgeTIs.push(ti);
+      edgeColors.push(bec[ci]);
+    });
+    if (edgeTIs.length) Plotly.restyle(plotDiv, { 'line.color': edgeColors }, edgeTIs);
+
+    // Restore float label colors
+    if (showFloatLabels) {
+      const lblTIs = [], lblColors = [];
+      conns.forEach((conn, ci) => {
+        const ti = cllti[ci];
+        if (ti < 0) return;
+        lblTIs.push(ti);
+        lblColors.push([_EDGE_BASE]);
+      });
+      if (lblTIs.length) Plotly.restyle(plotDiv, { 'textfont.color': lblColors }, lblTIs);
+    }
+
+    // Restore node trace
+    Plotly.restyle(plotDiv, {
+      'textfont.color':    [fIds.map(() => _NODE_DEFAULT)],
+      'marker.color':      [bnc.slice()],
+      'marker.line.color': [fIds.map(() => _NODE_DEFAULT)],
+    }, [nti]);
+
     cy.elements().removeClass('highlighted highlighted-succ highlighted-pred faded');
   });
 }
