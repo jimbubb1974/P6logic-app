@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>P6logic — Schedule Explorer</title>
+
+<!-- CDN libraries (loaded inline by html_builder.py for offline use) -->
+<script>__PLOTLY_SCRIPT__</script>
+<script>__CYTOSCAPE_SCRIPT__</script>
+<script>__XLSX_SCRIPT__</script>
+
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── top bar ── */
+#topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 6px 14px; background: #16213e; border-bottom: 1px solid #0f3460;
+  flex-shrink: 0; flex-wrap: wrap;
+}
+#topbar h1 { font-size: 15px; font-weight: 600; color: #e94560; white-space: nowrap; }
+.tb-sep { width: 1px; height: 20px; background: #0f3460; }
+.tb-label { font-size: 12px; color: #888; }
+.tb-control { display: flex; align-items: center; gap: 6px; }
+
+/* slider */
+#float-slider { width: 120px; accent-color: #e94560; }
+#float-input { width: 48px; background: #0f3460; border: 1px solid #e94560; color: #e0e0e0; border-radius: 4px; padding: 2px 4px; font-size: 12px; text-align: center; }
+
+/* toggle buttons */
+.tog-btn {
+  font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid #0f3460;
+  background: #0f3460; color: #aaa; cursor: pointer; white-space: nowrap;
+}
+.tog-btn.active { background: #e94560; border-color: #e94560; color: #fff; }
+
+/* line-weight selector */
+#lw-select { background: #0f3460; border: 1px solid #444; color: #e0e0e0; font-size: 12px; border-radius: 4px; padding: 2px 4px; }
+
+/* export button */
+#export-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #27ae60; background: transparent; color: #27ae60; cursor: pointer; }
+#export-btn:hover { background: #27ae60; color: #fff; }
+
+/* ── main area ── */
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* ── left panel: network explorer ── */
+#explorer-panel {
+  width: 340px; min-width: 220px; max-width: 480px;
+  display: flex; flex-direction: column;
+  background: #16213e; border-right: 2px solid #0f3460;
+  flex-shrink: 0;
+}
+#explorer-header {
+  padding: 8px 10px; border-bottom: 1px solid #0f3460;
+  display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+}
+#explorer-header span { font-size: 12px; font-weight: 600; color: #aaa; flex: 1; }
+#search-box {
+  flex: 1; background: #0f3460; border: 1px solid #444; color: #e0e0e0;
+  border-radius: 4px; padding: 4px 8px; font-size: 12px;
+}
+#search-box::placeholder { color: #555; }
+#search-count { font-size: 11px; color: #666; white-space: nowrap; }
+
+#cyto-container { flex: 1; background: #0d1b2a; position: relative; }
+#cy { width: 100%; height: 100%; }
+
+#explorer-footer {
+  padding: 6px 10px; border-top: 1px solid #0f3460; flex-shrink: 0;
+  display: flex; align-items: center; gap: 8px; font-size: 11px; color: #888;
+}
+#selected-count { flex: 1; }
+#clear-sel-btn, #add-all-btn {
+  font-size: 11px; padding: 3px 8px; border-radius: 4px; cursor: pointer;
+  border: 1px solid #444; background: transparent; color: #aaa;
+}
+#clear-sel-btn:hover { border-color: #e94560; color: #e94560; }
+#add-all-btn:hover { border-color: #3498db; color: #3498db; }
+
+/* resize handle */
+#resize-handle {
+  width: 5px; background: #0f3460; cursor: col-resize; flex-shrink: 0;
+  transition: background 0.15s;
+}
+#resize-handle:hover { background: #e94560; }
+
+/* ── right panel: diagram ── */
+#diagram-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#plotly-div { flex: 1; }
+
+/* ── node tooltip in cytoscape ── */
+#cy-tooltip {
+  position: fixed; background: #16213e; border: 1px solid #0f3460;
+  border-radius: 6px; padding: 8px 12px; font-size: 12px; pointer-events: none;
+  display: none; z-index: 999; max-width: 280px; line-height: 1.5;
+}
+#cy-tooltip .tip-code { font-weight: 700; color: #e94560; }
+#cy-tooltip .tip-name { color: #ccc; }
+#cy-tooltip .tip-meta { color: #888; font-size: 11px; }
+
+/* ── category legend ── */
+#cat-legend {
+  position: absolute; bottom: 8px; left: 8px; background: rgba(22,33,62,0.9);
+  border: 1px solid #0f3460; border-radius: 6px; padding: 6px 10px;
+  font-size: 11px; max-height: 180px; overflow-y: auto; z-index: 10;
+  display: none;
+}
+#cat-legend .leg-item { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+#cat-legend .leg-swatch { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+</style>
+</head>
+<body>
+
+<!-- ── top bar ── -->
+<div id="topbar">
+  <h1>P6logic</h1>
+  <div class="tb-sep"></div>
+
+  <div class="tb-control">
+    <span class="tb-label">Float filter:</span>
+    <input type="range" id="float-slider" min="0" max="999" value="999" step="1">
+    <input type="number" id="float-input" min="0" max="9999" value="999">
+    <span class="tb-label">days</span>
+  </div>
+
+  <div class="tb-sep"></div>
+
+  <div class="tb-control">
+    <span class="tb-label">Line weight:</span>
+    <select id="lw-select">
+      <option value="uniform">Uniform</option>
+      <option value="float">By float</option>
+      <option value="downstream">By downstream length</option>
+    </select>
+  </div>
+
+  <div class="tb-sep"></div>
+
+  <button class="tog-btn" id="float-labels-btn">Float labels</button>
+  <button class="tog-btn active" id="show-inter-btn">Key only</button>
+
+  <div class="tb-sep"></div>
+
+  <button id="export-btn">⬇ Export key activities</button>
+</div>
+
+<!-- ── main two-panel layout ── -->
+<div id="main">
+
+  <!-- left: network explorer -->
+  <div id="explorer-panel">
+    <div id="explorer-header">
+      <span>Network Explorer</span>
+      <input type="text" id="search-box" placeholder="Search code or name…">
+      <span id="search-count"></span>
+    </div>
+    <div id="cyto-container">
+      <div id="cy"></div>
+      <div id="cat-legend"></div>
+    </div>
+    <div id="explorer-footer">
+      <span id="selected-count">0 key activities selected</span>
+      <button id="clear-sel-btn">Clear</button>
+      <button id="add-all-btn">Add visible</button>
+    </div>
+  </div>
+
+  <!-- resize handle -->
+  <div id="resize-handle"></div>
+
+  <!-- right: logic diagram -->
+  <div id="diagram-panel">
+    <div id="plotly-div"></div>
+  </div>
+
+</div>
+
+<div id="cy-tooltip"></div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════════════
+// EMBEDDED DATA (injected by html_builder.py)
+// ═══════════════════════════════════════════════════════════════════════
+const PAYLOAD = __PAYLOAD_JSON__;
+
+// ═══════════════════════════════════════════════════════════════════════
+// APP CODE (injected by html_builder.py)
+// ═══════════════════════════════════════════════════════════════════════
+__APP_JS__
+</script>
+</body>
+</html>
