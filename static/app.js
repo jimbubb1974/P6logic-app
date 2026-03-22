@@ -171,7 +171,7 @@ cy.on('mouseover', 'node', evt => {
   // tooltip
   const pos = evt.renderedPosition;
   const container = document.getElementById('cy').getBoundingClientRect();
-  const floatStr = task.float_days != null ? `Float: ${task.float_days}d` : '';
+  const floatStr = task.float_days != null ? `Float: ${Math.round(task.float_days)}d` : '';
   tooltip.innerHTML = `
     <div class="tip-code">${task.code}</div>
     <div class="tip-name">${task.name}</div>
@@ -663,6 +663,14 @@ function rebuildDiagram() {
       const midY = (sPos.y + tPos.y) / 2;
       const srcFloat = taskById[conn.src]?.float_days;
       const label = srcFloat != null ? Math.round(srcFloat) + 'd' : '?';
+      // White halo behind label for readability — not tracked; always stays white
+      traces.push({
+        type: 'scatter', mode: 'text',
+        x: [midX], y: [midY],
+        text: [label],
+        textfont: { color: 'white', size: 13 },
+        hoverinfo: 'none', showlegend: false,
+      });
       connLabelTraceIdxs.push(traces.length);
       traces.push({
         type: 'scatter', mode: 'text',
@@ -688,7 +696,7 @@ function rebuildDiagram() {
     nodeY.push(pos.y);
     nodeText.push(t.code);
     baseNodeColors.push(nodeColor(t));
-    const floatStr = t.float_days != null ? `Float: ${t.float_days}d` : '';
+    const floatStr = t.float_days != null ? `Float: ${Math.round(t.float_days)}d` : '';
     nodeHover.push(`<b>${t.code}</b><br>${t.name}<br>${floatStr}`);
   });
 
