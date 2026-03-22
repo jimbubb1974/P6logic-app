@@ -21,7 +21,7 @@ PAYLOAD.categories.forEach((cat, i) => {
 });
 function nodeColor(task) {
   if (task.category && catColorMap[task.category]) return catColorMap[task.category];
-  return '#3a5f8a';
+  return '#4a7fa5';
 }
 
 // ── build edge lookup for Cytoscape ─────────────────────────────────────
@@ -61,7 +61,7 @@ const cy = cytoscape({
       style: {
         'background-color': ele => nodeColor(ele.data('task')),
         'label': 'data(label)',
-        'color': '#e0e0e0',
+        'color': '#222',
         'font-size': '9px',
         'width': 28,
         'height': 28,
@@ -69,6 +69,8 @@ const cy = cytoscape({
         'text-halign': 'center',
         'border-width': 0,
         'min-zoomed-font-size': 6,
+        'text-outline-width': 2,
+        'text-outline-color': '#fff',
       }
     },
     {
@@ -95,11 +97,11 @@ const cy = cytoscape({
       selector: 'edge',
       style: {
         'width': 1,
-        'line-color': '#2a4a6a',
-        'target-arrow-color': '#2a4a6a',
+        'line-color': '#aaaaaa',
+        'target-arrow-color': '#aaaaaa',
         'target-arrow-shape': 'triangle',
         'curve-style': 'bezier',
-        'opacity': 0.6,
+        'opacity': 0.7,
         'arrow-scale': 0.8,
       }
     },
@@ -586,15 +588,15 @@ let _diag = null;
 //   baseEdgeColors,       // per-connection base line colors (for reset)
 // }
 
-const _EDGE_BASE    = '#2a5a8a';
+const _EDGE_BASE    = '#8aabcb';
 const _EDGE_SUCC    = '#3498db';   // blue
 const _EDGE_PRED    = '#9b59b6';   // purple
-const _EDGE_FADED   = 'rgba(42,90,138,0.08)';
-const _NODE_DEFAULT = '#e0e0e0';
+const _EDGE_FADED   = 'rgba(100,100,100,0.1)';
+const _NODE_DEFAULT = '#333333';
 const _NODE_HOVERED = '#e94560';   // red
 const _NODE_SUCC    = '#3498db';   // blue
 const _NODE_PRED    = '#9b59b6';   // purple
-const _NODE_FADED   = 'rgba(150,150,150,0.15)';
+const _NODE_FADED   = 'rgba(180,180,180,0.35)';
 
 // Main diagram builder
 function rebuildDiagram() {
@@ -613,14 +615,14 @@ function rebuildDiagram() {
   if (filteredIds.length < 2) {
     Plotly.purge(plotDiv);
     Plotly.newPlot(plotDiv, [], {
-      paper_bgcolor: '#0d1b2a', plot_bgcolor: '#0d1b2a',
+      paper_bgcolor: 'white', plot_bgcolor: 'white',
       xaxis: { visible: false }, yaxis: { visible: false },
       annotations: [{
         text: filteredIds.length === 0
           ? 'Select key activities in the explorer →'
           : 'Select at least 2 key activities to show connections',
         xref: 'paper', yref: 'paper', x: 0.5, y: 0.5,
-        showarrow: false, font: { color: '#555', size: 14 },
+        showarrow: false, font: { color: '#aaa', size: 14 },
       }],
       margin: { l: 20, r: 20, t: 20, b: 20 },
     }, { responsive: true, displayModeBar: false });
@@ -660,8 +662,7 @@ function rebuildDiagram() {
       const midX = (sPos.x + tPos.x) / 2;
       const midY = (sPos.y + tPos.y) / 2;
       const srcFloat = taskById[conn.src]?.float_days;
-      const tgtFloat = taskById[conn.tgt]?.float_days;
-      const label = `${srcFloat != null ? srcFloat + 'd' : '?'} → ${tgtFloat != null ? tgtFloat + 'd' : '?'}`;
+      const label = srcFloat != null ? Math.round(srcFloat) + 'd' : '?';
       connLabelTraceIdxs.push(traces.length);
       traces.push({
         type: 'scatter', mode: 'text',
@@ -706,7 +707,7 @@ function rebuildDiagram() {
     },
     hovertext: nodeHover,
     hoverinfo: 'text',
-    hoverlabel: { bgcolor: '#16213e', bordercolor: '#0f3460', font: { color: '#e0e0e0' } },
+    hoverlabel: { bgcolor: '#f5f5f5', bordercolor: '#ccc', font: { color: '#222' } },
     showlegend: false,
     _isNodes: true,
   });
@@ -727,13 +728,13 @@ function rebuildDiagram() {
   }
 
   const layout = {
-    paper_bgcolor: '#0d1b2a',
-    plot_bgcolor: '#0d1b2a',
-    font: { color: '#aaa' },
+    paper_bgcolor: 'white',
+    plot_bgcolor: 'white',
+    font: { color: '#333' },
     xaxis: {
       tickvals: tickVals, ticktext: tickText,
-      gridcolor: '#1a2e45', zeroline: false,
-      tickfont: { size: 9 }, color: '#555',
+      gridcolor: '#e8e8e8', zeroline: false,
+      tickfont: { size: 9 }, color: '#666',
     },
     yaxis: { visible: false },
     margin: { l: 50, r: 20, t: 30, b: 40 },
