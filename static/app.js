@@ -588,6 +588,8 @@ let _diag = null;
 //   baseEdgeColors,       // per-connection base line colors (for reset)
 // }
 
+let _activeHighlightId = null;  // currently clicked node in the diagram
+
 const _EDGE_BASE    = '#8aabcb';
 const _EDGE_SUCC    = '#3498db';   // blue
 const _EDGE_PRED    = '#9b59b6';   // purple
@@ -763,17 +765,13 @@ function rebuildDiagram() {
   _diag = { filteredIds, connections, bgLineTI, bgLabelTI, ovLineTI, ovLabelTI,
             nodeTraceIdx, baseNodeColors, baseEdgeColors };
 
-  // ── hover interactions on diagram ─────────────────────────────────────
-  plotDiv.removeAllListeners('plotly_hover');
-  plotDiv.removeAllListeners('plotly_unhover');
+  // ── click interactions on diagram ─────────────────────────────────────
+  // Highlight fires on click (not hover) so restyle only runs on deliberate
+  // interaction, not on every mouse movement.
+  _activeHighlightId = null;   // clear any previous selection on rebuild
+  plotDiv.removeAllListeners('plotly_click');
 
-  plotDiv.on('plotly_hover', evt => {
-    if (!_diag) return;
-    const pt = evt.points[0];
-    if (!pt.data._isNodes) return;
-    const hoveredId = _diag.filteredIds[pt.pointIndex];
-    if (!hoveredId) return;
-
+  function _applyHighlight(selectedId) {
     const { filteredIds: fIds, connections: conns,
             bgLineTI: bLTI, bgLabelTI: bLblTI,
             ovLineTI: oLTI, ovLabelTI: oLblTI,
@@ -781,8 +779,8 @@ function rebuildDiagram() {
 
     const succConnSet = new Set(), predConnSet = new Set();
     conns.forEach((conn, ci) => {
-      if (conn.src === hoveredId) succConnSet.add(ci);
-      if (conn.tgt === hoveredId) predConnSet.add(ci);
+      if (conn.src === selectedId) succConnSet.add(ci);
+      if (conn.tgt === selectedId) predConnSet.add(ci);
     });
     const succNodeSet = new Set(), predNodeSet = new Set();
     conns.forEach((conn, ci) => {
@@ -790,19 +788,19 @@ function rebuildDiagram() {
       if (predConnSet.has(ci)) predNodeSet.add(conn.src);
     });
 
-    // Fade all background line traces
+    // Fade background line traces
     const bgLTIs = bLTI.filter(i => i >= 0);
     if (bgLTIs.length)
       Plotly.restyle(plotDiv, { 'line.color': bgLTIs.map(() => _EDGE_FADED) }, bgLTIs);
 
-    // Fade all background label traces
+    // Fade background label traces
     if (showFloatLabels) {
       const bgLblTIs = bLblTI.filter(i => i >= 0);
       if (bgLblTIs.length)
         Plotly.restyle(plotDiv, { 'textfont.color': bgLblTIs.map(() => ['rgba(0,0,0,0)']) }, bgLblTIs);
     }
 
-    // Show overlay line traces for highlighted connections
+    // Show overlay line traces for pred/succ connections
     const ovHighTIs = [], ovHighColors = [];
     conns.forEach((conn, ci) => {
       const ti = oLTI[ci]; if (ti < 0) return;
@@ -814,7 +812,7 @@ function rebuildDiagram() {
     if (ovHighTIs.length)
       Plotly.restyle(plotDiv, { 'line.color': ovHighColors, 'opacity': ovHighTIs.map(() => 1) }, ovHighTIs);
 
-    // Show overlay label traces for highlighted connections
+    // Show overlay label traces for pred/succ connections
     if (showFloatLabels) {
       const ovLblTIs = [], ovLblColors = [], ovHaloTIs = [];
       conns.forEach((conn, ci) => {
@@ -834,7 +832,7 @@ function rebuildDiagram() {
     // Restyle node trace
     const newTxtC = [], newOutC = [], newMrkC = [];
     fIds.forEach((id, i) => {
-      if (id === hoveredId) {
+      if (id === selectedId) {
         newTxtC.push(_NODE_HOVERED); newOutC.push(_NODE_HOVERED); newMrkC.push(bnc[i]);
       } else if (succNodeSet.has(id)) {
         newTxtC.push(_NODE_SUCC); newOutC.push(_NODE_SUCC); newMrkC.push(bnc[i]);
@@ -850,7 +848,7 @@ function rebuildDiagram() {
 
     // Sync Cytoscape
     cy.elements().removeClass('highlighted highlighted-succ highlighted-pred faded');
-    const cyNode = cy.getElementById(hoveredId);
+    const cyNode = cy.getElementById(selectedId);
     if (cyNode.length) {
       cy.elements().addClass('faded');
       cyNode.removeClass('faded').addClass('highlighted');
@@ -858,16 +856,14 @@ function rebuildDiagram() {
       cyNode.incomers('edge').removeClass('faded').addClass('highlighted-pred');
       cyNode.neighborhood('node').removeClass('faded').addClass('highlighted');
     }
-  });
+  }
 
-  plotDiv.on('plotly_unhover', () => {
-    if (!_diag) return;
+  function _clearHighlight() {
     const { filteredIds: fIds, connections: conns,
             bgLineTI: bLTI, bgLabelTI: bLblTI,
             ovLineTI: oLTI, ovLabelTI: oLblTI,
             nodeTraceIdx: nti, baseNodeColors: bnc, baseEdgeColors: bec } = _diag;
 
-    // Restore background line traces
     const bgRestoreTIs = [], bgRestoreColors = [];
     conns.forEach((conn, ci) => {
       if (bLTI[ci] >= 0) { bgRestoreTIs.push(bLTI[ci]); bgRestoreColors.push(bec[ci]); }
@@ -875,7 +871,6 @@ function rebuildDiagram() {
     if (bgRestoreTIs.length)
       Plotly.restyle(plotDiv, { 'line.color': bgRestoreColors }, bgRestoreTIs);
 
-    // Restore background label traces
     if (showFloatLabels) {
       const bgLblTIs = [], bgLblColors = [];
       conns.forEach((conn, ci) => {
@@ -885,12 +880,10 @@ function rebuildDiagram() {
         Plotly.restyle(plotDiv, { 'textfont.color': bgLblColors }, bgLblTIs);
     }
 
-    // Hide all overlay line traces
     const allOvLTIs = oLTI.filter(i => i >= 0);
     if (allOvLTIs.length)
       Plotly.restyle(plotDiv, { 'opacity': allOvLTIs.map(() => 0) }, allOvLTIs);
 
-    // Hide all overlay label traces and their halos
     if (showFloatLabels) {
       const allOvLblTIs = [], allOvHaloTIs = [];
       conns.forEach((conn, ci) => {
@@ -902,7 +895,6 @@ function rebuildDiagram() {
         Plotly.restyle(plotDiv, { 'opacity': allOvHaloTIs.map(() => 0) }, allOvHaloTIs);
     }
 
-    // Restore node trace
     Plotly.restyle(plotDiv, {
       'textfont.color': [fIds.map(() => _NODE_DEFAULT)],
       'marker.color': [bnc.slice()],
@@ -910,6 +902,22 @@ function rebuildDiagram() {
     }, [nti]);
 
     cy.elements().removeClass('highlighted highlighted-succ highlighted-pred faded');
+  }
+
+  plotDiv.on('plotly_click', evt => {
+    if (!_diag) return;
+    const pt = evt.points && evt.points[0];
+    if (!pt || !pt.data._isNodes) return;
+    const clickedId = _diag.filteredIds[pt.pointIndex];
+    if (!clickedId) return;
+
+    if (clickedId === _activeHighlightId) {
+      _activeHighlightId = null;
+      _clearHighlight();
+    } else {
+      _activeHighlightId = clickedId;
+      _applyHighlight(clickedId);
+    }
   });
 }
 
