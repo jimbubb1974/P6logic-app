@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.js_cache/
+*.html
+!templates/app.html
+*.xer
+*.xlsx
+*.csv
