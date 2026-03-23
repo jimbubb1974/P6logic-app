@@ -43,6 +43,21 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #ffffff; color: #
 #import-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #3498db; background: transparent; color: #3498db; cursor: pointer; }
 #import-btn:hover { background: #3498db; color: #fff; }
 #import-status { font-size: 11px; color: #888; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── import log bar ── */
+#import-log {
+  display: none; flex-shrink: 0;
+  background: #fff8e1; border-bottom: 1px solid #f5c842;
+  padding: 5px 14px; font-size: 11px; color: #7a5c00;
+  align-items: flex-start; gap: 8px;
+}
+#import-log.visible { display: flex; }
+#import-log-msg { flex: 1; line-height: 1.6; }
+#import-log-dismiss {
+  background: none; border: none; cursor: pointer; color: #999;
+  font-size: 14px; line-height: 1; padding: 0 2px; flex-shrink: 0;
+}
+#import-log-dismiss:hover { color: #333; }
 #export-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #27ae60; background: transparent; color: #27ae60; cursor: pointer; }
 #export-btn:hover { background: #27ae60; color: #fff; }
 #ka-open-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #8e44ad; background: transparent; color: #8e44ad; cursor: pointer; }
@@ -232,14 +247,15 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #ffffff; color: #
     <span class="tb-label">Line weight:</span>
     <select id="lw-select">
       <option value="uniform">Uniform</option>
-      <option value="float" selected>By float</option>
+      <option value="float" selected>By total float</option>
+      <option value="link_float">By link float</option>
       <option value="downstream">By downstream length</option>
     </select>
   </div>
 
   <div class="tb-sep"></div>
 
-  <button class="tog-btn active" id="float-labels-btn">Float labels</button>
+  <button class="tog-btn active" id="float-labels-btn">Float: Total</button>
   <button class="tog-btn active" id="show-inter-btn">Key only</button>
   <button class="tog-btn active" id="label-mode-btn">Labels: Short</button>
 
@@ -256,6 +272,12 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #ffffff; color: #
   <div class="tb-sep"></div>
 
   <button id="ka-open-btn">✎ Edit key activities</button>
+</div>
+
+<!-- ── import log bar ── -->
+<div id="import-log">
+  <span id="import-log-msg"></span>
+  <button id="import-log-dismiss" title="Dismiss">✕</button>
 </div>
 
 <!-- ── main two-panel layout ── -->
@@ -307,6 +329,7 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #ffffff; color: #
           <tr>
             <th>Activity ID</th>
             <th>Shorthand Name</th>
+            <th>Category</th>
             <th>Activity Name</th>
             <th style="text-align:right">Float (d)</th>
             <th></th>
@@ -314,6 +337,7 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #ffffff; color: #
         </thead>
         <tbody id="ka-tbody"></tbody>
       </table>
+      <datalist id="ka-cat-datalist"></datalist>
       <div id="ka-add-area">
         <div id="ka-add-label">Add activity — search by ID or name</div>
         <input type="text" id="ka-search-input" placeholder="Type to search…" autocomplete="off">

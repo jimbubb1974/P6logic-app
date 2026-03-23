@@ -101,6 +101,9 @@ def build_payload(
     id_to_float: dict[str, Optional[float]] = {
         tid: _float_days(t.total_float_hr_cnt) for tid, t in tasks.items()
     }
+    id_to_free_float: dict[str, Optional[float]] = {
+        tid: _float_days(t.free_float_hr_cnt) for tid, t in tasks.items()
+    }
 
     tasks_payload = []
     for tid, task in tasks.items():
@@ -113,6 +116,7 @@ def build_payload(
             "late_start": _parse_date_str(task.late_start_date),
             "late_end": _parse_date_str(task.late_end_date),
             "float_days": id_to_float[tid],
+            "free_float_days": id_to_free_float[tid],
             "task_type": task.task_type or "",
             "category": categories.get(task.task_code, ""),
         })

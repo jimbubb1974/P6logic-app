@@ -14,13 +14,71 @@ const taskById   = {};   // id -> task object
 const taskByCode = {};   // code -> task object
 PAYLOAD.tasks.forEach(t => { taskById[t.id] = t; taskByCode[t.code] = t; });
 
-// Assign category colours
+// ── precompute per-edge link float (calendar-day approximation) ────────────
+// Link float = date gap between predecessor early_end and successor early_start
+// (adjusted for relationship type and lag). Zero means this tie is driving.
+// Values reflect calendar days, not working days — driving ties on adjacent
+// working days will show ~1–3d due to overnight/weekend gaps.
+function _dateDays(iso) {
+  if (!iso) return null;
+  return Date.parse(iso) / 86400000;
+}
+
+const edgeLinkFloat = {};  // "srcId|tgtId" -> calendar-day link float (integer) or null
+PAYLOAD.edges.forEach(e => {
+  const src = taskById[e.src_id], tgt = taskById[e.tgt_id];
+  if (!src || !tgt) { edgeLinkFloat[`${e.src_id}|${e.tgt_id}`] = null; return; }
+  const lag = e.lag_days || 0;
+  const pt  = (e.pred_type || 'PR_FS').toUpperCase();
+  let lf = null;
+  if (pt.includes('SS')) {
+    const s1 = _dateDays(src.early_start), s2 = _dateDays(tgt.early_start);
+    if (s1 != null && s2 != null) lf = s2 - s1 - lag;
+  } else if (pt.includes('FF')) {
+    const f1 = _dateDays(src.early_end), f2 = _dateDays(tgt.early_end);
+    if (f1 != null && f2 != null) lf = f2 - f1 - lag;
+  } else if (pt.includes('SF')) {
+    const s1 = _dateDays(src.early_start), f2 = _dateDays(tgt.early_end);
+    if (s1 != null && f2 != null) lf = f2 - s1 - lag;
+  } else {  // FS (default)
+    const f1 = _dateDays(src.early_end), s2 = _dateDays(tgt.early_start);
+    if (f1 != null && s2 != null) lf = s2 - f1 - lag;
+  }
+  edgeLinkFloat[`${e.src_id}|${e.tgt_id}`] = lf != null ? Math.round(lf) : null;
+});
+const maxLinkFloat = Math.max(0, ...Object.values(edgeLinkFloat).filter(v => v != null));
+
+// Min link float along all hops of a key-activity connection path.
+// A connection may pass through intermediate activities; the tightest hop
+// determines whether this chain can allow the target to pull left.
+function connLinkFloat(conn) {
+  const path = [conn.src, ...(conn.intermediate || []), conn.tgt];
+  let min = Infinity;
+  for (let i = 0; i < path.length - 1; i++) {
+    const lf = edgeLinkFloat[`${path[i]}|${path[i + 1]}`];
+    if (lf == null) return null;   // any missing hop → unknown
+    if (lf < min) min = lf;
+  }
+  return min === Infinity ? null : min;
+}
+
+// Assign category colours (seeded from PAYLOAD; extended by user import/editor)
 const catColorMap = {};
 PAYLOAD.categories.forEach((cat, i) => {
   catColorMap[cat] = CAT_PALETTE[i % CAT_PALETTE.length];
 });
+
+// User-assigned categories (from import column C or editor); overrides XER category
+let categoryOverrideMap = {};   // task id -> category string
+
+function ensureCatColor(cat) {
+  if (!cat || catColorMap[cat]) return;
+  catColorMap[cat] = CAT_PALETTE[Object.keys(catColorMap).length % CAT_PALETTE.length];
+}
+
 function nodeColor(task) {
-  if (task.category && catColorMap[task.category]) return catColorMap[task.category];
+  const cat = categoryOverrideMap[task.id] || task.category;
+  if (cat && catColorMap[cat]) return catColorMap[cat];
   return '#4a7fa5';
 }
 
@@ -266,7 +324,9 @@ cy.on('mouseover', 'node', evt => {
   const task = node.data('task');
   const pos  = evt.renderedPosition;
   const rect = document.getElementById('cy').getBoundingClientRect();
-  const floatStr = task.float_days != null ? `Float: ${Math.round(task.float_days)}d` : '';
+  const tfStr2 = task.float_days != null ? `TF: ${Math.round(task.float_days)}d` : '';
+  const ffStr2 = task.free_float_days != null ? `FF: ${Math.round(task.free_float_days)}d` : '';
+  const floatStr = [tfStr2, ffStr2].filter(Boolean).join('  ');
   tooltip.innerHTML = `
     <div class="tip-code">${task.code}</div>
     <div class="tip-name">${task.name}</div>
@@ -317,6 +377,7 @@ searchBox.addEventListener('blur', () => {
 document.getElementById('clear-sel-btn').addEventListener('click', () => {
   keySet.clear();
   shorthandMap = {};
+  categoryOverrideMap = {};
   clearExplorer();
   rebuildDiagram();
   kaRenderTable();
@@ -342,9 +403,10 @@ function updateSelectedCount() {
 // ── category legend ────────────────────────────────────────────────────────
 function buildCategoryLegend() {
   const legend = document.getElementById('cat-legend');
-  if (PAYLOAD.categories.length === 0) return;
+  const cats = Object.keys(catColorMap);
+  if (!cats.length) { legend.style.display = 'none'; return; }
   legend.style.display = 'block';
-  legend.innerHTML = PAYLOAD.categories.map(cat =>
+  legend.innerHTML = cats.map(cat =>
     `<div class="leg-item">
       <div class="leg-swatch" style="background:${catColorMap[cat]}"></div>
       <span>${cat}</span>
@@ -377,6 +439,20 @@ const importBtn    = document.getElementById('import-btn');
 const importFile   = document.getElementById('import-file');
 const importStatus = document.getElementById('import-status');
 
+const importLog        = document.getElementById('import-log');
+const importLogMsg     = document.getElementById('import-log-msg');
+const importLogDismiss = document.getElementById('import-log-dismiss');
+importLogDismiss.addEventListener('click', () => importLog.classList.remove('visible'));
+
+function showImportLog(missing) {
+  if (!missing.length) { importLog.classList.remove('visible'); return; }
+  const MAX_SHOWN = 12;
+  const shown = missing.slice(0, MAX_SHOWN).join(', ');
+  const extra = missing.length > MAX_SHOWN ? ` … and ${missing.length - MAX_SHOWN} more` : '';
+  importLogMsg.textContent = `⚠ ${missing.length} code${missing.length > 1 ? 's' : ''} not found in schedule: ${shown}${extra}`;
+  importLog.classList.add('visible');
+}
+
 // Header labels to skip (same as P6logic Python side)
 const _HEADER_LABELS = new Set([
   'activity id','activity_id','task_code','id','code','activity','activity code'
@@ -407,16 +483,14 @@ importFile.addEventListener('change', () => {
         const wb = XLSX.read(data, { type: 'array' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const raw = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
-        rows = raw.map(r => [String(r[0] || '').trim(), String(r[1] || '').trim()]);
+        rows = raw.map(r => [String(r[0] || '').trim(), String(r[1] || '').trim(), String(r[2] || '').trim()]);
       }
       importFile.value = '';
       const { matched, missing } = applyImportRows(rows);
-      if (missing.length === 0) {
-        importStatus.textContent = `✓ ${matched} imported`;
-      } else {
-        importStatus.textContent = `✓ ${matched} imported, ${missing.length} not found`;
-        console.warn('Import: codes not found in schedule:', missing);
-      }
+      importStatus.textContent = missing.length === 0
+        ? `✓ ${matched} imported`
+        : `✓ ${matched} imported, ${missing.length} not found`;
+      showImportLog(missing);
     } catch (err) {
       importStatus.textContent = '✗ Error reading file';
       console.error('Import error:', err);
@@ -471,14 +545,19 @@ function applyImportRows(rows) {
   const missing = [];
   keySet.clear();
   shorthandMap = {};
+  categoryOverrideMap = {};
   cy.nodes().removeClass('selected-key');
 
-  rows.forEach(([code, shorthand]) => {
+  rows.forEach(([code, shorthand, category]) => {
     if (!code) return;
     const task = taskByCode[code];
     if (task) {
       keySet.add(task.id);
-      if (shorthand) shorthandMap[task.id] = shorthand;
+      if (shorthand)  shorthandMap[task.id] = shorthand;
+      if (category) {
+        categoryOverrideMap[task.id] = category;
+        ensureCatColor(category);
+      }
       cy.getElementById(task.id).addClass('selected-key');
       matched++;
     } else {
@@ -486,6 +565,7 @@ function applyImportRows(rows) {
     }
   });
 
+  buildCategoryLegend();
   updateCyLabels();
   updateSelectedCount();
   rebuildDiagram();
@@ -517,6 +597,11 @@ function kaRenderTable() {
   const tbody = document.getElementById('ka-tbody');
   tbody.innerHTML = '';
 
+  // Refresh category autocomplete list
+  const dl = document.getElementById('ka-cat-datalist');
+  dl.innerHTML = Object.keys(catColorMap)
+    .map(c => `<option value="${c}"></option>`).join('');
+
   const sorted = [...keySet]
     .map(id => taskById[id]).filter(Boolean)
     .sort((a, b) => (a.early_start || '').localeCompare(b.early_start || '') || a.code.localeCompare(b.code));
@@ -543,6 +628,27 @@ function kaRenderTable() {
     });
     shortTd.appendChild(shortIn);
 
+    const catTd  = document.createElement('td');
+    const catIn  = document.createElement('input');
+    catIn.type = 'text';
+    catIn.className = 'ka-short-input';
+    catIn.value = categoryOverrideMap[task.id] || task.category || '';
+    catIn.placeholder = '—';
+    catIn.setAttribute('list', 'ka-cat-datalist');
+    catIn.addEventListener('change', () => {
+      const v = catIn.value.trim();
+      if (v) {
+        categoryOverrideMap[task.id] = v;
+        ensureCatColor(v);
+        buildCategoryLegend();
+      } else {
+        delete categoryOverrideMap[task.id];
+      }
+      rebuildDiagram();
+      if (explorerFocusId) focusExplorer(explorerFocusId);
+    });
+    catTd.appendChild(catIn);
+
     const nameTd   = document.createElement('td');
     nameTd.className = 'ka-name-cell';
     nameTd.textContent = task.name;
@@ -560,6 +666,7 @@ function kaRenderTable() {
     rmBtn.addEventListener('click', () => {
       keySet.delete(task.id);
       delete shorthandMap[task.id];
+      delete categoryOverrideMap[task.id];
       cy.getElementById(task.id).removeClass('selected-key');
       updateCyLabels();
       updateSelectedCount();
@@ -568,7 +675,7 @@ function kaRenderTable() {
     });
     rmTd.appendChild(rmBtn);
 
-    tr.append(codeTd, shortTd, nameTd, floatTd, rmTd);
+    tr.append(codeTd, shortTd, catTd, nameTd, floatTd, rmTd);
     tbody.appendChild(tr);
   });
 
@@ -638,14 +745,14 @@ kaImportModalFile.addEventListener('change', () => {
         const wb = XLSX.read(new Uint8Array(evt.target.result), { type: 'array' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' })
-          .map(r => [String(r[0] || '').trim(), String(r[1] || '').trim()]);
+          .map(r => [String(r[0] || '').trim(), String(r[1] || '').trim(), String(r[2] || '').trim()]);
       }
       kaImportModalFile.value = '';
       const { matched, missing } = applyImportRows(rows);
       importStatus.textContent = missing.length === 0
         ? `✓ ${matched} imported`
         : `✓ ${matched} imported, ${missing.length} not found`;
-      if (missing.length) console.warn('Import: not found:', missing);
+      showImportLog(missing);
     } catch (err) {
       console.error('Modal import error:', err);
     }
@@ -711,8 +818,8 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') kaClose(); }
 
 // ── global state ────────────────────────────────────────────────────────
 let currentFloatFilter = Infinity;   // max float days to show (slider value)
-let showFloatLabels = true;
-let lineWeightMode = 'float';        // 'uniform' | 'float' | 'downstream'
+let floatLabelMode = 'total';        // 'total' | 'link' | 'none'
+let lineWeightMode = 'float';        // 'uniform' | 'float' | 'link_float' | 'downstream'
 
 // ── controls wiring ─────────────────────────────────────────────────────
 const floatSlider = document.getElementById('float-slider');
@@ -741,8 +848,9 @@ floatSlider.addEventListener('input', () => applyFilterValue(+floatSlider.value)
 floatInput.addEventListener('change', () => applyFilterValue(+floatInput.value));
 
 document.getElementById('float-labels-btn').addEventListener('click', function() {
-  showFloatLabels = !showFloatLabels;
-  this.classList.toggle('active', showFloatLabels);
+  floatLabelMode = floatLabelMode === 'total' ? 'link' : floatLabelMode === 'link' ? 'none' : 'total';
+  this.textContent = floatLabelMode === 'total' ? 'Float: Total' : floatLabelMode === 'link' ? 'Float: Link' : 'Float: Off';
+  this.classList.toggle('active', floatLabelMode !== 'none');
   rebuildDiagram();
 });
 
@@ -758,10 +866,17 @@ document.getElementById('show-inter-btn').addEventListener('click', function() {
 
 // ── export ───────────────────────────────────────────────────────────────
 document.getElementById('export-btn').addEventListener('click', () => {
-  const rows = [['Activity ID', 'Name', 'Float (days)', 'Category']];
+  // Column order matches import: A=Activity ID, B=Shorthand, C=Category, D=Name, E=Float
+  const rows = [['Activity ID', 'Shorthand Name', 'Category', 'Name', 'Float (days)']];
   keySet.forEach(id => {
     const t = taskById[id];
-    if (t) rows.push([t.code, t.name, t.float_days ?? '', t.category || '']);
+    if (t) rows.push([
+      t.code,
+      shorthandMap[id] || '',
+      categoryOverrideMap[id] || t.category || '',
+      t.name,
+      t.float_days ?? '',
+    ]);
   });
 
   if (typeof XLSX !== 'undefined') {
@@ -912,6 +1027,15 @@ function edgeWidth(conn, localMinF, localMaxF) {
     const logSpan = Math.log(span + 1);
     return 1 + 4 * (1 - logF / logSpan);
   }
+  if (lineWeightMode === 'link_float') {
+    const lf = connLinkFloat(conn) ?? 999;
+    const minF = localMinF ?? 0;
+    const maxF = localMaxF ?? Math.max(1, maxLinkFloat);
+    const span = Math.max(1, maxF - minF);
+    const logF    = Math.log(Math.min(Math.max(lf - minF, 0), span) + 1);
+    const logSpan = Math.log(span + 1);
+    return 1 + 4 * (1 - logF / logSpan);
+  }
   if (lineWeightMode === 'downstream') {
     const edge = PAYLOAD.edges.find(e => e.src_id === conn.src && e.tgt_id === conn.tgt);
     const ds = edge ? edge.downstream_len : 1;
@@ -999,6 +1123,11 @@ function rebuildDiagram() {
     localMinF = Math.min(...connFloats);
     localMaxF = Math.max(...connFloats);
     if (localMaxF === localMinF) { localMinF = 0; }  // avoid zero span
+  } else if (lineWeightMode === 'link_float' && connections.length) {
+    const vals = connections.map(conn => connLinkFloat(conn) ?? 0);
+    localMinF = Math.min(...vals);
+    localMaxF = Math.max(...vals);
+    if (localMaxF === localMinF) { localMinF = 0; }
   } else if (lineWeightMode === 'downstream' && connections.length) {
     const dsVals = connections.map(conn => {
       const edge = PAYLOAD.edges.find(e => e.src_id === conn.src && e.tgt_id === conn.tgt);
@@ -1052,8 +1181,9 @@ function rebuildDiagram() {
     const t = taskById[id];
     nodeX.push(pos.x); nodeY.push(pos.y); nodeText.push(getLabelForTask(t));
     baseNodeColors.push(nodeColor(t));
-    const floatStr = t.float_days != null ? `Float: ${Math.round(t.float_days)}d` : '';
-    nodeHover.push(`<b>${t.code}</b><br>${t.name}<br>${floatStr}`);
+    const tfStr = t.float_days != null ? `TF: ${Math.round(t.float_days)}d` : '';
+    const ffStr = t.free_float_days != null ? `FF: ${Math.round(t.free_float_days)}d` : '';
+    nodeHover.push(`<b>${t.code}</b><br>${t.name}<br>${[tfStr, ffStr].filter(Boolean).join('  ')}`);
   });
   const n = filteredIds.length;
   traces.push({
@@ -1142,9 +1272,26 @@ function rebuildDiagram() {
       }
     });
     if (ovHighTIs.length) {
-      const ovHighWidths = ovHighTIs.map((ti, i) => {
+      // Recompute local range from just the highlighted connections so the
+      // full 1–5px width range is used regardless of diagram-wide extremes.
+      let hlMinF = localMinF, hlMaxF = localMaxF;
+      if (lineWeightMode === 'link_float') {
+        const hVals = ovHighTIs.map(ti => connLinkFloat(conns[oLTI.indexOf(ti)]) ?? 0);
+        hlMinF = Math.min(...hVals);
+        hlMaxF = Math.max(...hVals);
+        if (hlMaxF === hlMinF) hlMinF = 0;
+      } else if (lineWeightMode === 'float') {
+        const hVals = ovHighTIs.map(ti => {
+          const c = conns[oLTI.indexOf(ti)];
+          return Math.min(taskById[c.src]?.float_days ?? 0, taskById[c.tgt]?.float_days ?? 0);
+        });
+        hlMinF = Math.min(...hVals);
+        hlMaxF = Math.max(...hVals);
+        if (hlMaxF === hlMinF) hlMinF = 0;
+      }
+      const ovHighWidths = ovHighTIs.map((ti) => {
         const ci = oLTI.indexOf(ti);
-        return edgeWidth(conns[ci], localMinF, localMaxF);
+        return edgeWidth(conns[ci], hlMinF, hlMaxF);
       });
       Plotly.restyle(plotDiv, {
         'line.color': ovHighColors,
@@ -1154,17 +1301,23 @@ function rebuildDiagram() {
     }
 
     // Float labels as Plotly annotations (proper bgcolor rectangle support)
-    if (showFloatLabels) {
+    if (floatLabelMode !== 'none') {
       const annotations = [];
       conns.forEach((conn, ci) => {
         if (!succConnSet.has(ci) && !predConnSet.has(ci)) return;
         const sPos = pos[conn.src], tPos = pos[conn.tgt];
         if (!sPos || !tPos) return;
         const mx = (sPos.x + tPos.x) / 2, my = (sPos.y + tPos.y) / 2;
-        const sf = taskById[conn.src]?.float_days;
-        const tf = taskById[conn.tgt]?.float_days;
-        const f = (sf != null && tf != null) ? Math.min(sf, tf) : (sf ?? tf);
-        const lbl = f != null ? Math.round(f) + 'd' : '?';
+        let lbl;
+        if (floatLabelMode === 'link') {
+          const lf = connLinkFloat(conn);
+          lbl = lf != null ? Math.round(lf) + 'd' : '?';
+        } else {
+          const sf = taskById[conn.src]?.float_days;
+          const tf = taskById[conn.tgt]?.float_days;
+          const f = (sf != null && tf != null) ? Math.min(sf, tf) : (sf ?? tf);
+          lbl = f != null ? Math.round(f) + 'd' : '?';
+        }
         const color = succConnSet.has(ci) ? _EDGE_SUCC : _EDGE_PRED;
         annotations.push({
           x: mx, y: my, xref: 'x', yref: 'y',
@@ -1220,7 +1373,7 @@ function rebuildDiagram() {
     if (allOvLTIs.length)
       Plotly.restyle(plotDiv, { 'opacity': allOvLTIs.map(() => 0) }, allOvLTIs);
 
-    if (showFloatLabels) {
+    if (floatLabelMode !== 'none') {
       Plotly.relayout(plotDiv, { annotations: [] });
     }
 

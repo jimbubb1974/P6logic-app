@@ -16,6 +16,7 @@ class Task:
     late_start_date: Optional[str] = None
     late_end_date: Optional[str] = None
     total_float_hr_cnt: Optional[float] = None
+    free_float_hr_cnt: Optional[float] = None
     task_type: Optional[str] = None
 
 
@@ -100,6 +101,7 @@ def parse_xer(path: str) -> tuple[dict[str, Task], dict[str, list[TaskPred]]]:
                 late_start_date=row.get("late_start_date") or None,
                 late_end_date=row.get("late_end_date") or None,
                 total_float_hr_cnt=_float(row.get("total_float_hr_cnt", "")),
+                free_float_hr_cnt=_float(row.get("free_float_hr_cnt", "")),
                 task_type=row.get("task_type") or None,
             )
 
