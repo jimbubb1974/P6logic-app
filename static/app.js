@@ -1013,12 +1013,17 @@ function computeLayout(keyIds, dateField) {
 // Line width calculation
 // localMaxF / localMinF: optional float range from the current diagram connections
 // (when provided, normalizes within the visible range for better contrast)
-function edgeWidth(conn, localMinF, localMaxF) {
+function edgeWidth(conn, localMinF, localMaxF, floatOverride) {
   if (lineWeightMode === 'uniform') return 2;
   if (lineWeightMode === 'float') {
-    const srcFloat = taskById[conn.src]?.float_days;
-    const tgtFloat = taskById[conn.tgt]?.float_days;
-    const f = Math.min(srcFloat ?? 999, tgtFloat ?? 999);
+    let f;
+    if (floatOverride !== undefined) {
+      f = floatOverride ?? 999;
+    } else {
+      const srcFloat = taskById[conn.src]?.float_days;
+      const tgtFloat = taskById[conn.tgt]?.float_days;
+      f = Math.min(srcFloat ?? 999, tgtFloat ?? 999);
+    }
     const minF = localMinF ?? 0;
     const maxF = localMaxF ?? Math.max(1, maxFloat);
     const span = Math.max(1, maxF - minF);
@@ -1275,23 +1280,29 @@ function rebuildDiagram() {
       // Recompute local range from just the highlighted connections so the
       // full 1–5px width range is used regardless of diagram-wide extremes.
       let hlMinF = localMinF, hlMaxF = localMaxF;
+      // directional float per highlighted ti: pred arrows use src TF, succ arrows use tgt TF
+      const _dirFloat = ti => {
+        const ci = oLTI.indexOf(ti);
+        const c = conns[ci];
+        return predConnSet.has(ci)
+          ? (taskById[c.src]?.float_days ?? 0)
+          : (taskById[c.tgt]?.float_days ?? 0);
+      };
       if (lineWeightMode === 'link_float') {
         const hVals = ovHighTIs.map(ti => connLinkFloat(conns[oLTI.indexOf(ti)]) ?? 0);
         hlMinF = Math.min(...hVals);
         hlMaxF = Math.max(...hVals);
         if (hlMaxF === hlMinF) hlMinF = 0;
       } else if (lineWeightMode === 'float') {
-        const hVals = ovHighTIs.map(ti => {
-          const c = conns[oLTI.indexOf(ti)];
-          return Math.min(taskById[c.src]?.float_days ?? 0, taskById[c.tgt]?.float_days ?? 0);
-        });
+        const hVals = ovHighTIs.map(_dirFloat);
         hlMinF = Math.min(...hVals);
         hlMaxF = Math.max(...hVals);
         if (hlMaxF === hlMinF) hlMinF = 0;
       }
       const ovHighWidths = ovHighTIs.map((ti) => {
         const ci = oLTI.indexOf(ti);
-        return edgeWidth(conns[ci], hlMinF, hlMaxF);
+        const dirF = lineWeightMode === 'float' ? _dirFloat(ti) : undefined;
+        return edgeWidth(conns[ci], hlMinF, hlMaxF, dirF);
       });
       Plotly.restyle(plotDiv, {
         'line.color': ovHighColors,
