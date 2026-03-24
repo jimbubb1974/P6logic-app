@@ -1313,9 +1313,11 @@ function rebuildDiagram() {
           const lf = connLinkFloat(conn);
           lbl = lf != null ? Math.round(lf) + 'd' : '?';
         } else {
-          const sf = taskById[conn.src]?.float_days;
-          const tf = taskById[conn.tgt]?.float_days;
-          const f = (sf != null && tf != null) ? Math.min(sf, tf) : (sf ?? tf);
+          // Predecessor arrows: show the predecessor's TF (which upstream path is driving?)
+          // Successor arrows: show the successor's TF (which downstream path is at risk?)
+          const f = predConnSet.has(ci)
+            ? taskById[conn.src]?.float_days
+            : taskById[conn.tgt]?.float_days;
           lbl = f != null ? Math.round(f) + 'd' : '?';
         }
         const color = succConnSet.has(ci) ? _EDGE_SUCC : _EDGE_PRED;
@@ -1327,6 +1329,22 @@ function rebuildDiagram() {
           borderpad: 3,
         });
       });
+
+      // Selected node: show its total float below the circle
+      const selPos = pos[selectedId];
+      const selTask = taskById[selectedId];
+      if (selPos && selTask?.float_days != null) {
+        annotations.push({
+          x: selPos.x, y: selPos.y, xref: 'x', yref: 'y',
+          text: `TF: ${Math.round(selTask.float_days)}d`,
+          showarrow: false,
+          yshift: -18,
+          font: { color: _NODE_HOVERED, size: 10 },
+          bgcolor: 'rgba(255,255,255,0.9)',
+          borderpad: 2,
+        });
+      }
+
       Plotly.relayout(plotDiv, { annotations });
     }
 
