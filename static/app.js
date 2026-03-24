@@ -1383,6 +1383,7 @@ function rebuildDiagram() {
 
     // Sync explorer
     focusExplorer(selectedId);
+    document.getElementById('svg-btn').disabled = false;
   }
 
   function _clearHighlight() {
@@ -1414,6 +1415,7 @@ function rebuildDiagram() {
     }, [nti]);
 
     clearExplorer();
+    document.getElementById('svg-btn').disabled = true;
   }
 
   plotDiv.on('plotly_click', evt => {
@@ -1432,6 +1434,183 @@ function rebuildDiagram() {
     }
   });
 }
+
+// ── SVG focus export ─────────────────────────────────────────────────────
+
+function _svgWrapText(text, maxWidth, fontSize) {
+  const avgCharW = fontSize * 0.58;
+  const maxChars = Math.floor(maxWidth / avgCharW);
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = '';
+  for (const w of words) {
+    const candidate = cur ? cur + ' ' + w : w;
+    if (candidate.length <= maxChars) {
+      cur = candidate;
+    } else {
+      if (cur) lines.push(cur);
+      cur = w.length > maxChars ? w.slice(0, maxChars - 1) + '\u2026' : w;
+    }
+  }
+  if (cur) lines.push(cur);
+  return lines.slice(0, 4);  // cap at 4 lines
+}
+
+function _svgComputeColumns(nodeIds, edges) {
+  const out = {}, inDeg = {};
+  nodeIds.forEach(id => { out[id] = []; inDeg[id] = 0; });
+  edges.forEach(({ src, tgt }) => {
+    if (out[src] !== undefined && inDeg[tgt] !== undefined) {
+      out[src].push(tgt);
+      inDeg[tgt]++;
+    }
+  });
+  const col = {};
+  nodeIds.forEach(id => col[id] = 0);
+  const q = nodeIds.filter(id => inDeg[id] === 0).slice();
+  while (q.length) {
+    const id = q.shift();
+    out[id].forEach(tgt => {
+      col[tgt] = Math.max(col[tgt] ?? 0, (col[id] ?? 0) + 1);
+      if (--inDeg[tgt] === 0) q.push(tgt);
+    });
+  }
+  return col;
+}
+
+function generateFocusSVG(selectedId) {
+  if (!_diag || !selectedId) return;
+  const { connections: conns } = _diag;
+
+  // Build pred/succ sets same as _applyHighlight
+  const succConnSet = new Set(), predConnSet = new Set();
+  conns.forEach((conn, ci) => {
+    if (conn.src === selectedId) succConnSet.add(ci);
+    if (conn.tgt === selectedId) predConnSet.add(ci);
+  });
+  const succNodeSet = new Set(), predNodeSet = new Set();
+  conns.forEach((conn, ci) => {
+    if (succConnSet.has(ci)) succNodeSet.add(conn.tgt);
+    if (predConnSet.has(ci)) predNodeSet.add(conn.src);
+  });
+
+  const nodeSet = new Set([...predNodeSet, selectedId, ...succNodeSet]);
+  const nodeIds = [...nodeSet];
+
+  // Deduplicated direct edges between visible nodes
+  const edgeSeen = new Set();
+  const visEdges = [];
+  conns.forEach(c => {
+    const key = c.src + '|' + c.tgt;
+    if (nodeSet.has(c.src) && nodeSet.has(c.tgt) && !edgeSeen.has(key)) {
+      edgeSeen.add(key);
+      visEdges.push({ src: c.src, tgt: c.tgt });
+    }
+  });
+
+  // Column layout via longest path
+  const colMap = _svgComputeColumns(nodeIds, visEdges);
+
+  // Group nodes by column, sort rows by code
+  const colGroups = {};
+  nodeIds.forEach(id => {
+    const c = colMap[id] ?? 0;
+    (colGroups[c] = colGroups[c] || []).push(id);
+  });
+  Object.values(colGroups).forEach(ids =>
+    ids.sort((a, b) => (taskById[a]?.code || '').localeCompare(taskById[b]?.code || ''))
+  );
+
+  // Node sizing constants
+  const NODE_W = 130, PAD_X = 8, PAD_TOP = 7, PAD_BOT = 7, LINE_H = 13;
+  const CODE_FS = 11, NAME_FS = 10, COL_GAP = 72, ROW_GAP = 22, MARGIN = 40;
+
+  // Pre-compute label text and node height for each node
+  const nodeInfo = {};
+  nodeIds.forEach(id => {
+    const t = taskById[id];
+    const code = t?.code || id;
+    const label = shorthandMap[id] || t?.name || '';
+    const nameLines = label ? _svgWrapText(label, NODE_W - PAD_X * 2, NAME_FS) : [];
+    const h = PAD_TOP + LINE_H + (nameLines.length ? 3 + nameLines.length * LINE_H : 0) + PAD_BOT;
+    nodeInfo[id] = { code, nameLines, h };
+  });
+
+  // Column x positions
+  const colKeys = Object.keys(colGroups).map(Number).sort((a, b) => a - b);
+  const colX = {};
+  colKeys.forEach((c, i) => { colX[c] = MARGIN + i * (NODE_W + COL_GAP); });
+
+  // Total canvas size
+  const maxColH = Math.max(...colKeys.map(c => {
+    const ids = colGroups[c];
+    return ids.reduce((s, id) => s + nodeInfo[id].h, 0) + Math.max(0, ids.length - 1) * ROW_GAP;
+  }));
+  const totalH = maxColH + MARGIN * 2;
+  const totalW = colKeys.length * (NODE_W + COL_GAP) - COL_GAP + MARGIN * 2;
+
+  // Row y positions (center each column's group vertically)
+  const pos = {};
+  colKeys.forEach(c => {
+    const ids = colGroups[c];
+    const groupH = ids.reduce((s, id) => s + nodeInfo[id].h, 0) + Math.max(0, ids.length - 1) * ROW_GAP;
+    let y = (totalH - groupH) / 2;
+    ids.forEach(id => { pos[id] = { x: colX[c], y }; y += nodeInfo[id].h + ROW_GAP; });
+  });
+
+  // Build SVG string
+  const esc = s => String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" `;
+  svg += `font-family="'Segoe UI',Arial,sans-serif">\n`;
+  svg += `<rect width="${totalW}" height="${totalH}" fill="white"/>\n`;
+  svg += `<defs><marker id="ah" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">`;
+  svg += `<polygon points="0 0,10 3.5,0 7" fill="#666"/></marker></defs>\n`;
+
+  // Edges
+  svg += `<g id="edges">\n`;
+  visEdges.forEach(({ src, tgt }) => {
+    const sp = pos[src], tp = pos[tgt];
+    if (!sp || !tp) return;
+    const x1 = sp.x + NODE_W, y1 = sp.y + nodeInfo[src].h / 2;
+    const x2 = tp.x,          y2 = tp.y + nodeInfo[tgt].h / 2;
+    const cpx = Math.max(28, (x2 - x1) * 0.4);
+    svg += `  <path d="M ${x1} ${y1} C ${x1+cpx} ${y1},${x2-cpx} ${y2},${x2} ${y2}" `;
+    svg += `fill="none" stroke="#666" stroke-width="1.5" marker-end="url(#ah)"/>\n`;
+  });
+  svg += `</g>\n`;
+
+  // Nodes
+  svg += `<g id="nodes">\n`;
+  nodeIds.forEach(id => {
+    const p = pos[id]; if (!p) return;
+    const { code, nameLines, h } = nodeInfo[id];
+    const isSel = id === selectedId;
+    const fill   = isSel ? '#d4d4d4' : '#f5f5f5';
+    const stroke = isSel ? '#333'    : '#888';
+    const sw     = isSel ? 2         : 1.5;
+    svg += `  <g transform="translate(${p.x},${p.y})">\n`;
+    svg += `    <rect width="${NODE_W}" height="${h}" rx="5" fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>\n`;
+    svg += `    <text x="${NODE_W/2}" y="${PAD_TOP + CODE_FS}" text-anchor="middle" `;
+    svg += `font-size="${CODE_FS}" font-weight="700" fill="#222">${esc(code)}</text>\n`;
+    nameLines.forEach((line, i) => {
+      const ty = PAD_TOP + CODE_FS + 3 + (i + 1) * LINE_H;
+      svg += `    <text x="${NODE_W/2}" y="${ty}" text-anchor="middle" font-size="${NAME_FS}" fill="#444">${esc(line)}</text>\n`;
+    });
+    svg += `  </g>\n`;
+  });
+  svg += `</g>\n</svg>`;
+
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  window.open(URL.createObjectURL(blob), '_blank');
+}
+
+// Button wiring (element added in HTML)
+document.getElementById('svg-btn').addEventListener('click', () => {
+  if (_activeHighlightId) generateFocusSVG(_activeHighlightId);
+});
 
 // Initial empty diagram
 rebuildDiagram();

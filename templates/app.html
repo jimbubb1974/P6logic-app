@@ -62,6 +62,9 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #ffffff; color: #
 #export-btn:hover { background: #27ae60; color: #fff; }
 #ka-open-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #8e44ad; background: transparent; color: #8e44ad; cursor: pointer; }
 #ka-open-btn:hover { background: #8e44ad; color: #fff; }
+#svg-btn { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid #888; background: transparent; color: #888; cursor: pointer; }
+#svg-btn:not(:disabled):hover { border-color: #555; color: #555; background: #f0f0f0; }
+#svg-btn:disabled { opacity: 0.4; cursor: default; }
 
 /* ── main area ── */
 #main { display: flex; flex: 1; overflow: hidden; }
@@ -272,6 +275,10 @@ body { font-family: 'Segoe UI', Arial, sans-serif; background: #ffffff; color: #
   <div class="tb-sep"></div>
 
   <button id="ka-open-btn">✎ Edit key activities</button>
+
+  <div class="tb-sep"></div>
+
+  <button id="svg-btn" disabled>⬡ Export focus SVG</button>
 </div>
 
 <!-- ── import log bar ── -->
