@@ -895,30 +895,33 @@ document.getElementById('chain-analysis-btn').addEventListener('click', () => {
     return fa !== fb ? fa - fb : (taskById[a]?.code || '').localeCompare(taskById[b]?.code || '');
   };
 
-  // Format a list of ids as "CODE – Short Name" lines
-  function fmtList(ids) {
-    if (!ids.length) return 'None';
-    return ids.slice().sort(byFloat).map(id => {
-      const t = taskById[id];
-      const code = t?.code || id;
-      const short = shorthandMap[id] || t?.name || '';
-      return short ? `${code} \u2013 ${short}` : code;
-    }).join('\n');
+  // Format one id as "CODE – Short Name"
+  function fmtEntry(id) {
+    const t = taskById[id];
+    const code = t?.code || id;
+    const short = shorthandMap[id] || t?.name || '';
+    return short ? `${code} \u2013 ${short}` : code;
   }
 
   const sortedKeys = allKeyIds.slice().sort(byFloat);
   const header = ['Activity Code', 'Short Name', 'Total Float (days)',
                   'Predecessor Key Activities', 'Successor Key Activities'];
-  const rows = [header, ...sortedKeys.map(id => {
+  const rows = [header];
+  sortedKeys.forEach(id => {
     const t = taskById[id];
-    return [
-      t?.code || id,
-      shorthandMap[id] || t?.name || '',
-      t?.float_days != null ? Math.round(t.float_days) : '',
-      fmtList(reachable(id, bwd)),
-      fmtList(reachable(id, fwd)),
-    ];
-  })];
+    const predList = reachable(id, bwd).sort(byFloat).map(fmtEntry);
+    const succList = reachable(id, fwd).sort(byFloat).map(fmtEntry);
+    const numRows = Math.max(predList.length, succList.length, 1);
+    for (let i = 0; i < numRows; i++) {
+      const predVal = predList.length === 0 && i === 0 ? 'None' : (predList[i] || '');
+      const succVal = succList.length === 0 && i === 0 ? 'None' : (succList[i] || '');
+      rows.push(i === 0
+        ? [t?.code || id, shorthandMap[id] || t?.name || '',
+           t?.float_days != null ? Math.round(t.float_days) : '', predVal, succVal]
+        : ['', '', '', predVal, succVal]
+      );
+    }
+  });
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [{ wch: 18 }, { wch: 28 }, { wch: 18 }, { wch: 52 }, { wch: 52 }];
