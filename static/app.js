@@ -864,6 +864,69 @@ document.getElementById('show-inter-btn').addEventListener('click', function() {
   this.classList.toggle('active');
 });
 
+// ── chain analysis export ─────────────────────────────────────────────────
+document.getElementById('chain-analysis-btn').addEventListener('click', () => {
+  const allKeyIds = [...keySet];
+  if (allKeyIds.length === 0) { alert('No key activities selected.'); return; }
+
+  // Build connections across ALL key activities (ignore float filter)
+  const allConns = findConnections(allKeyIds);
+
+  // Adjacency lists (forward and backward)
+  const fwd = {}, bwd = {};
+  allKeyIds.forEach(id => { fwd[id] = []; bwd[id] = []; });
+  allConns.forEach(({ src, tgt }) => { fwd[src].push(tgt); bwd[tgt].push(src); });
+
+  // Transitive reachability via BFS
+  function reachable(startId, adj) {
+    const visited = new Set();
+    const q = [startId];
+    while (q.length) {
+      const id = q.shift();
+      (adj[id] || []).forEach(nb => { if (!visited.has(nb)) { visited.add(nb); q.push(nb); } });
+    }
+    visited.delete(startId);
+    return [...visited];
+  }
+
+  // Sort helper: by float asc, then code asc
+  const byFloat = (a, b) => {
+    const fa = taskById[a]?.float_days ?? 999999, fb = taskById[b]?.float_days ?? 999999;
+    return fa !== fb ? fa - fb : (taskById[a]?.code || '').localeCompare(taskById[b]?.code || '');
+  };
+
+  // Format a list of ids as "CODE – Short Name" lines
+  function fmtList(ids) {
+    if (!ids.length) return 'None';
+    return ids.slice().sort(byFloat).map(id => {
+      const t = taskById[id];
+      const code = t?.code || id;
+      const short = shorthandMap[id] || t?.name || '';
+      return short ? `${code} \u2013 ${short}` : code;
+    }).join('\n');
+  }
+
+  const sortedKeys = allKeyIds.slice().sort(byFloat);
+  const header = ['Activity Code', 'Short Name', 'Total Float (days)',
+                  'Predecessor Key Activities', 'Successor Key Activities'];
+  const rows = [header, ...sortedKeys.map(id => {
+    const t = taskById[id];
+    return [
+      t?.code || id,
+      shorthandMap[id] || t?.name || '',
+      t?.float_days != null ? Math.round(t.float_days) : '',
+      fmtList(reachable(id, bwd)),
+      fmtList(reachable(id, fwd)),
+    ];
+  })];
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 18 }, { wch: 28 }, { wch: 18 }, { wch: 52 }, { wch: 52 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Chain Analysis');
+  XLSX.writeFile(wb, 'chain_analysis.xlsx');
+});
+
 // ── export ───────────────────────────────────────────────────────────────
 document.getElementById('export-btn').addEventListener('click', () => {
   // Column order matches import: A=Activity ID, B=Shorthand, C=Category, D=Name, E=Float
