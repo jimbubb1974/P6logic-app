@@ -913,14 +913,15 @@ document.getElementById('chain-analysis-btn').addEventListener('click', () => {
     const direct   = reachableIds.filter(r => directSet.has(r)).sort(byFloat);
     const indirect = reachableIds.filter(r => !directSet.has(r)).sort(byFloat);
     return [
-      ...direct.map(r   => ({ label: fmtEntry(r), rel: 'Direct' })),
-      ...indirect.map(r => ({ label: fmtEntry(r), rel: 'Indirect' })),
+      ...direct.map(r   => ({ label: fmtEntry(r), rel: 'Direct',   id: r })),
+      ...indirect.map(r => ({ label: fmtEntry(r), rel: 'Indirect', id: r })),
     ];
   }
 
   const sortedKeys = allKeyIds.slice().sort(byFloat);
   const header = ['Activity Code', 'Short Name', 'Total Float (days)',
                   'Predecessor Key Activity', 'Pred Relationship',
+                  'Pred Early End', 'Pred Total Float (days)',
                   'Successor Key Activity',   'Succ Relationship'];
   const rows = [header];
   sortedKeys.forEach(id => {
@@ -932,19 +933,22 @@ document.getElementById('chain-analysis-btn').addEventListener('click', () => {
       const pe = predEntries[i], se = succEntries[i];
       const predVal = predEntries.length === 0 && i === 0 ? 'None' : (pe?.label || '');
       const predRel = pe?.rel || '';
+      const predEnd = pe?.id ? (taskById[pe.id]?.early_end || '') : '';
+      const predFloat = pe?.id && taskById[pe.id]?.float_days != null
+        ? Math.round(taskById[pe.id].float_days) : '';
       const succVal = succEntries.length === 0 && i === 0 ? 'None' : (se?.label || '');
       const succRel = se?.rel || '';
       rows.push(i === 0
         ? [t?.code || id, shorthandMap[id] || t?.name || '',
            t?.float_days != null ? Math.round(t.float_days) : '',
-           predVal, predRel, succVal, succRel]
-        : ['', '', '', predVal, predRel, succVal, succRel]
+           predVal, predRel, predEnd, predFloat, succVal, succRel]
+        : ['', '', '', predVal, predRel, predEnd, predFloat, succVal, succRel]
       );
     }
   });
 
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{ wch: 18 }, { wch: 28 }, { wch: 16 }, { wch: 45 }, { wch: 12 }, { wch: 45 }, { wch: 12 }];
+  ws['!cols'] = [{ wch: 18 }, { wch: 28 }, { wch: 16 }, { wch: 45 }, { wch: 12 }, { wch: 14 }, { wch: 16 }, { wch: 45 }, { wch: 12 }];
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Chain Analysis');
   XLSX.writeFile(wb, 'chain_analysis.xlsx');
