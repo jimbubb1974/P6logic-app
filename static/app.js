@@ -1474,6 +1474,7 @@ function rebuildDiagram() {
     // Sync explorer
     focusExplorer(selectedId);
     document.getElementById('svg-btn').disabled = false;
+    document.getElementById('pred-gantt-btn').disabled = false;
   }
 
   function _clearHighlight() {
@@ -1506,6 +1507,7 @@ function rebuildDiagram() {
 
     clearExplorer();
     document.getElementById('svg-btn').disabled = true;
+    document.getElementById('pred-gantt-btn').disabled = true;
   }
 
   plotDiv.on('plotly_click', evt => {
@@ -1700,6 +1702,175 @@ function generateFocusSVG(selectedId) {
 // Button wiring (element added in HTML)
 document.getElementById('svg-btn').addEventListener('click', () => {
   if (_activeHighlightId) generateFocusSVG(_activeHighlightId);
+});
+
+// ── Predecessor finish timeline SVG ───────────────────────────────────────
+
+function generatePredGanttSVG(selectedId) {
+  if (!_diag || !selectedId) return;
+  const { connections: conns } = _diag;
+  const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+  // Collect direct predecessors (one hop only)
+  const predIdSet = new Set();
+  conns.forEach(c => { if (c.tgt === selectedId) predIdSet.add(c.src); });
+
+  const selTask = taskById[selectedId];
+  if (!selTask) return;
+
+  function parseDate(s) {
+    if (!s) return null;
+    const [y, m, d] = s.split('-').map(Number);
+    return new Date(y, m - 1, d);
+  }
+  function fmtDate(d) {
+    const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return `${mo[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  }
+
+  const selStart = parseDate(selTask.early_start);
+  const selEnd   = parseDate(selTask.early_end);
+  if (!selStart || !selEnd) { alert('Selected activity is missing date data.'); return; }
+
+  const predData = [...predIdSet].map(id => {
+    const t = taskById[id];
+    const finDate = parseDate(t?.early_end);
+    const float   = t?.float_days != null ? Math.round(t.float_days) : null;
+    const label   = (shorthandMap[id] || t?.name || t?.code || id).trim();
+    return { id, finDate, float, label };
+  }).filter(d => d.finDate);
+
+  if (predData.length === 0) { alert('No direct predecessors with finish date data found.'); return; }
+
+  // Date range with padding
+  const allDates  = [selStart, selEnd, ...predData.map(d => d.finDate)];
+  const rawMin    = new Date(Math.min(...allDates.map(d => d.getTime())));
+  const rawMax    = new Date(Math.max(...allDates.map(d => d.getTime())));
+  const rangeDays = Math.max((rawMax - rawMin) / 86400000, 14);
+  const padDays   = Math.max(Math.round(rangeDays * 0.07), 7);
+  const minDate   = new Date(rawMin); minDate.setDate(minDate.getDate() - padDays);
+  const maxDate   = new Date(rawMax); maxDate.setDate(maxDate.getDate() + padDays);
+  const totalDays = (maxDate - minDate) / 86400000;
+
+  // Layout constants
+  const ML = 60, MR = 80, MT = 55, MB = 50;
+  const SVG_W  = Math.max(960, predData.length * 140 + ML + MR);
+  const xScale = (SVG_W - ML - MR) / totalDays;
+  function dateToX(d) { return ML + (d - minDate) / 86400000 * xScale; }
+
+  const DIAMOND_R   = 8;
+  const ROW_H       = 58;
+  const MAX_ROWS    = 6;
+  const MIN_X_GAP   = 185;   // min px between centers on the same row (label clearance)
+  const GANTT_H     = 32;
+  const AXIS_Y_GAP  = 20;    // gap below milestone area to axis
+  const AXIS_TO_BAR = 40;    // gap from axis to top of gantt bar
+  const BAR_EXTRA   = 24;    // space below bar for out-of-bar label if needed
+
+  const msAreaH = MAX_ROWS * ROW_H;
+  const AXIS_Y  = MT + msAreaH + AXIS_Y_GAP;
+  const GANTT_Y = AXIS_Y + AXIS_TO_BAR;
+  const SVG_H   = GANTT_Y + GANTT_H + BAR_EXTRA + MB;
+
+  // Greedy row assignment: pick row with leftmost last-used x (most available room)
+  predData.sort((a, b) => a.finDate - b.finDate);
+  const rowNextX = new Array(MAX_ROWS).fill(-Infinity);
+  predData.forEach(d => {
+    d.x = dateToX(d.finDate);
+    let best = 0;
+    for (let r = 1; r < MAX_ROWS; r++) { if (rowNextX[r] < rowNextX[best]) best = r; }
+    d.row = best;
+    rowNextX[best] = d.x + MIN_X_GAP;
+    d.y = MT + d.row * ROW_H + ROW_H / 2;
+  });
+
+  // ── Build SVG ─────────────────────────────────────────────────────────────
+  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_W}" height="${SVG_H}" font-family="'Segoe UI',Arial,sans-serif">\n`;
+  svg += `<rect width="${SVG_W}" height="${SVG_H}" fill="white"/>\n`;
+
+  // Title
+  const selCode  = selTask.code || selectedId;
+  const selShort = shorthandMap[selectedId] || selTask.name || '';
+  const titleTxt = selShort
+    ? `${selCode} \u2013 ${selShort} \u2014 Predecessor Finish Timeline`
+    : `${selCode} \u2014 Predecessor Finish Timeline`;
+  svg += `<text x="${(SVG_W / 2).toFixed(1)}" y="30" text-anchor="middle" font-size="13" font-weight="700" fill="#222">${esc(titleTxt)}</text>\n`;
+
+  // Dashed drop lines from diamond bottom to axis (drawn first, under nodes)
+  predData.forEach(({ x, y }) => {
+    svg += `<line x1="${x.toFixed(1)}" y1="${(y + DIAMOND_R + 2).toFixed(1)}" x2="${x.toFixed(1)}" y2="${AXIS_Y}" stroke="#d0d0d0" stroke-width="1" stroke-dasharray="4,3"/>\n`;
+  });
+
+  // Axis line
+  svg += `<line x1="${ML}" y1="${AXIS_Y}" x2="${(SVG_W - MR).toFixed(1)}" y2="${AXIS_Y}" stroke="#bbb" stroke-width="1.5"/>\n`;
+
+  // Collect unique tick positions (pred finishes + gantt start & end)
+  const tickMap = new Map();
+  predData.forEach(d => {
+    const k = d.finDate.getTime();
+    if (!tickMap.has(k)) tickMap.set(k, { x: d.x, date: d.finDate });
+  });
+  [{ d: selStart, x: dateToX(selStart) }, { d: selEnd, x: dateToX(selEnd) }].forEach(({ d, x }) => {
+    const k = d.getTime();
+    if (!tickMap.has(k)) tickMap.set(k, { x, date: d });
+  });
+  const ticks = [...tickMap.values()].sort((a, b) => a.x - b.x);
+
+  // Tick marks
+  ticks.forEach(({ x }) => {
+    svg += `<line x1="${x.toFixed(1)}" y1="${(AXIS_Y - 5).toFixed(1)}" x2="${x.toFixed(1)}" y2="${(AXIS_Y + 5).toFixed(1)}" stroke="#999" stroke-width="1.5"/>\n`;
+  });
+
+  // Date labels — alternate between two y levels if adjacent ticks are close
+  const MIN_LABEL_GAP = 60;
+  let prevLX = -Infinity, prevLY = AXIS_Y + 17;
+  ticks.forEach(({ x, date }) => {
+    const lY = (x - prevLX < MIN_LABEL_GAP && prevLY === AXIS_Y + 17) ? AXIS_Y + 29 : AXIS_Y + 17;
+    svg += `<text x="${x.toFixed(1)}" y="${lY}" text-anchor="middle" font-size="9" fill="#666">${esc(fmtDate(date))}</text>\n`;
+    prevLX = x; prevLY = lY;
+  });
+
+  // Dashed connectors from axis tick down to gantt bar edges
+  const gx1 = dateToX(selStart), gx2 = dateToX(selEnd);
+  svg += `<line x1="${gx1.toFixed(1)}" y1="${AXIS_Y}" x2="${gx1.toFixed(1)}" y2="${GANTT_Y}" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>\n`;
+  svg += `<line x1="${gx2.toFixed(1)}" y1="${AXIS_Y}" x2="${gx2.toFixed(1)}" y2="${(GANTT_Y + GANTT_H)}" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>\n`;
+
+  // Gantt bar
+  const gW = Math.max(gx2 - gx1, 4);
+  svg += `<rect x="${gx1.toFixed(1)}" y="${GANTT_Y}" width="${gW.toFixed(1)}" height="${GANTT_H}" rx="4" fill="#2471a3" opacity="0.9"/>\n`;
+
+  // Gantt bar label
+  const barLabel = selShort ? `${selCode} \u2013 ${selShort}` : selCode;
+  const selTF    = selTask.float_days != null ? `TF: ${Math.round(selTask.float_days)}d` : '';
+  const barMidX  = ((gx1 + gx2) / 2).toFixed(1);
+  const barMidY  = (GANTT_Y + GANTT_H / 2 + 4).toFixed(1);
+  if (gW > 80) {
+    svg += `<text x="${barMidX}" y="${barMidY}" text-anchor="middle" font-size="11" font-weight="600" fill="white">${esc(barLabel)}</text>\n`;
+    if (selTF) svg += `<text x="${(gx2 + 8).toFixed(1)}" y="${barMidY}" font-size="10" fill="#555">${esc(selTF)}</text>\n`;
+  } else {
+    svg += `<text x="${(gx2 + 8).toFixed(1)}" y="${barMidY}" font-size="11" font-weight="600" fill="#2471a3">${esc(barLabel)}</text>\n`;
+    if (selTF) svg += `<text x="${(gx2 + 8).toFixed(1)}" y="${(GANTT_Y + GANTT_H / 2 + 16).toFixed(1)}" font-size="10" fill="#555">${esc(selTF)}</text>\n`;
+  }
+
+  // Diamond milestone nodes (drawn last, over the drop lines)
+  predData.forEach(({ x, y, label, float }) => {
+    const fullLabel = float != null ? `${label}, ${float}d` : label;
+    const r = DIAMOND_R;
+    const pts = `${x.toFixed(1)},${(y-r).toFixed(1)} ${(x+r).toFixed(1)},${y.toFixed(1)} ${x.toFixed(1)},${(y+r).toFixed(1)} ${(x-r).toFixed(1)},${y.toFixed(1)}`;
+    svg += `<polygon points="${pts}" fill="#e74c3c" stroke="#c0392b" stroke-width="1.5"/>\n`;
+    const nearRight = (SVG_W - MR - x) < 200;
+    const lx     = nearRight ? x - r - 6 : x + r + 6;
+    const anchor  = nearRight ? 'end' : 'start';
+    svg += `<text x="${lx.toFixed(1)}" y="${(y + 4).toFixed(1)}" font-size="10" fill="#222" text-anchor="${anchor}">${esc(fullLabel)}</text>\n`;
+  });
+
+  svg += `</svg>`;
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
+  window.open(URL.createObjectURL(blob), '_blank');
+}
+
+document.getElementById('pred-gantt-btn').addEventListener('click', () => {
+  if (_activeHighlightId) generatePredGanttSVG(_activeHighlightId);
 });
 
 // Initial empty diagram
