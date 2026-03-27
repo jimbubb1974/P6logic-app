@@ -1771,13 +1771,35 @@ function generatePredGanttSVG(selectedId) {
   const AXIS_Y   = MT + MAX_ROWS * ROW_H + AXIS_Y_GAP;
   const GANTT_Y  = AXIS_Y + AXIS_TO_BAR;
 
-  // Greedy row assignment: pick row with leftmost last-used x (most available room)
+  // Row assignment using bisection order: spread consecutive (close-x) nodes as far apart
+  // vertically as possible, interleaving like binary search tree levels.
+  // e.g. for 6 rows the order is [2, 0, 4, 1, 3, 5] — middle first, then midpoints of
+  // each half, so adjacent nodes in time land in rows that are maximally far apart.
   predData.sort((a, b) => a.finDate - b.finDate);
+  function bisectOrder(n) {
+    const res = [], q = [[0, n - 1]];
+    while (q.length) {
+      const [lo, hi] = q.shift();
+      if (lo > hi) continue;
+      const mid = lo + Math.floor((hi - lo) / 2);
+      res.push(mid);
+      q.push([lo, mid - 1], [mid + 1, hi]);
+    }
+    return res;
+  }
+  const ROW_ORDER = bisectOrder(MAX_ROWS);
   const rowNextX = new Array(MAX_ROWS).fill(-Infinity);
   predData.forEach(d => {
     d.x = dateToX(d.finDate);
-    let best = 0;
-    for (let r = 1; r < MAX_ROWS; r++) { if (rowNextX[r] < rowNextX[best]) best = r; }
+    // Try rows in bisection order; pick the first where d.x clears the previous label
+    let best = -1;
+    for (const r of ROW_ORDER) {
+      if (d.x >= rowNextX[r]) { best = r; break; }
+    }
+    // Fallback: all rows overlap — pick the one whose label ends soonest
+    if (best === -1) {
+      best = ROW_ORDER.reduce((a, b) => rowNextX[a] < rowNextX[b] ? a : b);
+    }
     d.row = best;
     rowNextX[best] = d.x + MIN_X_GAP;
     d.y = MT + d.row * ROW_H + ROW_H / 2;
