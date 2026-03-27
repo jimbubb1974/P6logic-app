@@ -1723,9 +1723,8 @@ function generatePredGanttSVG(selectedId) {
     const [y, m, d] = s.split('-').map(Number);
     return new Date(y, m - 1, d);
   }
-  function fmtDate(d) {
-    const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    return `${mo[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  function quarterLabel(d) {
+    return `Q${Math.floor(d.getMonth() / 3) + 1} ${d.getFullYear()}`;
   }
 
   const selStart = parseDate(selTask.early_start);
@@ -1742,35 +1741,35 @@ function generatePredGanttSVG(selectedId) {
 
   if (predData.length === 0) { alert('No direct predecessors with finish date data found.'); return; }
 
-  // Date range with padding
-  const allDates  = [selStart, selEnd, ...predData.map(d => d.finDate)];
-  const rawMin    = new Date(Math.min(...allDates.map(d => d.getTime())));
-  const rawMax    = new Date(Math.max(...allDates.map(d => d.getTime())));
-  const rangeDays = Math.max((rawMax - rawMin) / 86400000, 14);
-  const padDays   = Math.max(Math.round(rangeDays * 0.07), 7);
-  const minDate   = new Date(rawMin); minDate.setDate(minDate.getDate() - padDays);
-  const maxDate   = new Date(rawMax); maxDate.setDate(maxDate.getDate() + padDays);
+  // Date range — snap outward to nearest quarter boundary for clean axis
+  const allDates = [selStart, selEnd, ...predData.map(d => d.finDate)];
+  const rawMin   = new Date(Math.min(...allDates.map(d => d.getTime())));
+  const rawMax   = new Date(Math.max(...allDates.map(d => d.getTime())));
+  // snap minDate back to start of its quarter, maxDate forward to start of next quarter
+  const minDate  = new Date(rawMin.getFullYear(), Math.floor(rawMin.getMonth() / 3) * 3, 1);
+  const maxQtrStart = new Date(rawMax.getFullYear(), Math.floor(rawMax.getMonth() / 3) * 3, 1);
+  const maxDate  = new Date(maxQtrStart.getFullYear(), maxQtrStart.getMonth() + 3, 1);
   const totalDays = (maxDate - minDate) / 86400000;
 
-  // Layout constants
+  // Fixed canvas — landscape letter (11 × 8.5 in at 96 dpi)
+  const SVG_W = 1056, SVG_H = 816;
   const ML = 60, MR = 80, MT = 55, MB = 50;
-  const SVG_W  = Math.max(960, predData.length * 140 + ML + MR);
+
   const xScale = (SVG_W - ML - MR) / totalDays;
   function dateToX(d) { return ML + (d - minDate) / 86400000 * xScale; }
 
+  // Derive ROW_H from the fixed canvas so nodes fill the available space
   const DIAMOND_R   = 8;
-  const ROW_H       = 58;
   const MAX_ROWS    = 6;
-  const MIN_X_GAP   = 185;   // min px between centers on the same row (label clearance)
+  const MIN_X_GAP   = 185;
   const GANTT_H     = 32;
-  const AXIS_Y_GAP  = 20;    // gap below milestone area to axis
-  const AXIS_TO_BAR = 40;    // gap from axis to top of gantt bar
-  const BAR_EXTRA   = 24;    // space below bar for out-of-bar label if needed
-
-  const msAreaH = MAX_ROWS * ROW_H;
-  const AXIS_Y  = MT + msAreaH + AXIS_Y_GAP;
-  const GANTT_Y = AXIS_Y + AXIS_TO_BAR;
-  const SVG_H   = GANTT_Y + GANTT_H + BAR_EXTRA + MB;
+  const AXIS_Y_GAP  = 22;
+  const AXIS_TO_BAR = 42;
+  const BAR_EXTRA   = 22;
+  const msAreaH  = SVG_H - MT - AXIS_Y_GAP - AXIS_TO_BAR - GANTT_H - BAR_EXTRA - MB;
+  const ROW_H    = Math.floor(msAreaH / MAX_ROWS);
+  const AXIS_Y   = MT + MAX_ROWS * ROW_H + AXIS_Y_GAP;
+  const GANTT_Y  = AXIS_Y + AXIS_TO_BAR;
 
   // Greedy row assignment: pick row with leftmost last-used x (most available room)
   predData.sort((a, b) => a.finDate - b.finDate);
@@ -1784,6 +1783,14 @@ function generatePredGanttSVG(selectedId) {
     d.y = MT + d.row * ROW_H + ROW_H / 2;
   });
 
+  // Quarter ticks: every quarter boundary within the date range
+  const qticks = [];
+  const qCursor = new Date(minDate);
+  while (qCursor <= maxDate) {
+    qticks.push(new Date(qCursor));
+    qCursor.setMonth(qCursor.getMonth() + 3);
+  }
+
   // ── Build SVG ─────────────────────────────────────────────────────────────
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SVG_W}" height="${SVG_H}" font-family="'Segoe UI',Arial,sans-serif">\n`;
   svg += `<rect width="${SVG_W}" height="${SVG_H}" fill="white"/>\n`;
@@ -1794,43 +1801,31 @@ function generatePredGanttSVG(selectedId) {
   const titleTxt = selShort
     ? `${selCode} \u2013 ${selShort} \u2014 Predecessor Finish Timeline`
     : `${selCode} \u2014 Predecessor Finish Timeline`;
-  svg += `<text x="${(SVG_W / 2).toFixed(1)}" y="30" text-anchor="middle" font-size="13" font-weight="700" fill="#222">${esc(titleTxt)}</text>\n`;
+  svg += `<text x="${(SVG_W / 2).toFixed(1)}" y="32" text-anchor="middle" font-size="14" font-weight="700" fill="#222">${esc(titleTxt)}</text>\n`;
 
-  // Dashed drop lines from diamond bottom to axis (drawn first, under nodes)
+  // Quarter vertical grid lines (full chart height, very light)
+  qticks.forEach(qt => {
+    const x = dateToX(qt).toFixed(1);
+    svg += `<line x1="${x}" y1="${MT}" x2="${x}" y2="${(GANTT_Y + GANTT_H)}" stroke="#e8e8e8" stroke-width="1"/>\n`;
+  });
+
+  // Dashed drop lines from diamond bottom to axis (drawn before nodes)
   predData.forEach(({ x, y }) => {
     svg += `<line x1="${x.toFixed(1)}" y1="${(y + DIAMOND_R + 2).toFixed(1)}" x2="${x.toFixed(1)}" y2="${AXIS_Y}" stroke="#d0d0d0" stroke-width="1" stroke-dasharray="4,3"/>\n`;
   });
 
   // Axis line
-  svg += `<line x1="${ML}" y1="${AXIS_Y}" x2="${(SVG_W - MR).toFixed(1)}" y2="${AXIS_Y}" stroke="#bbb" stroke-width="1.5"/>\n`;
+  svg += `<line x1="${ML}" y1="${AXIS_Y}" x2="${(SVG_W - MR).toFixed(1)}" y2="${AXIS_Y}" stroke="#999" stroke-width="1.5"/>\n`;
 
-  // Collect unique tick positions (pred finishes + gantt start & end)
-  const tickMap = new Map();
-  predData.forEach(d => {
-    const k = d.finDate.getTime();
-    if (!tickMap.has(k)) tickMap.set(k, { x: d.x, date: d.finDate });
-  });
-  [{ d: selStart, x: dateToX(selStart) }, { d: selEnd, x: dateToX(selEnd) }].forEach(({ d, x }) => {
-    const k = d.getTime();
-    if (!tickMap.has(k)) tickMap.set(k, { x, date: d });
-  });
-  const ticks = [...tickMap.values()].sort((a, b) => a.x - b.x);
-
-  // Tick marks
-  ticks.forEach(({ x }) => {
-    svg += `<line x1="${x.toFixed(1)}" y1="${(AXIS_Y - 5).toFixed(1)}" x2="${x.toFixed(1)}" y2="${(AXIS_Y + 5).toFixed(1)}" stroke="#999" stroke-width="1.5"/>\n`;
+  // Quarter tick marks and labels on axis
+  qticks.forEach(qt => {
+    const x = dateToX(qt);
+    if (x < ML || x > SVG_W - MR) return;
+    svg += `<line x1="${x.toFixed(1)}" y1="${(AXIS_Y - 6).toFixed(1)}" x2="${x.toFixed(1)}" y2="${(AXIS_Y + 6).toFixed(1)}" stroke="#888" stroke-width="1.5"/>\n`;
+    svg += `<text x="${x.toFixed(1)}" y="${(AXIS_Y + 20).toFixed(1)}" text-anchor="middle" font-size="10" fill="#555">${esc(quarterLabel(qt))}</text>\n`;
   });
 
-  // Date labels — alternate between two y levels if adjacent ticks are close
-  const MIN_LABEL_GAP = 60;
-  let prevLX = -Infinity, prevLY = AXIS_Y + 17;
-  ticks.forEach(({ x, date }) => {
-    const lY = (x - prevLX < MIN_LABEL_GAP && prevLY === AXIS_Y + 17) ? AXIS_Y + 29 : AXIS_Y + 17;
-    svg += `<text x="${x.toFixed(1)}" y="${lY}" text-anchor="middle" font-size="9" fill="#666">${esc(fmtDate(date))}</text>\n`;
-    prevLX = x; prevLY = lY;
-  });
-
-  // Dashed connectors from axis tick down to gantt bar edges
+  // Dashed connectors from axis down to gantt bar edges
   const gx1 = dateToX(selStart), gx2 = dateToX(selEnd);
   svg += `<line x1="${gx1.toFixed(1)}" y1="${AXIS_Y}" x2="${gx1.toFixed(1)}" y2="${GANTT_Y}" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>\n`;
   svg += `<line x1="${gx2.toFixed(1)}" y1="${AXIS_Y}" x2="${gx2.toFixed(1)}" y2="${(GANTT_Y + GANTT_H)}" stroke="#aaa" stroke-width="1" stroke-dasharray="4,3"/>\n`;
@@ -1859,8 +1854,8 @@ function generatePredGanttSVG(selectedId) {
     const pts = `${x.toFixed(1)},${(y-r).toFixed(1)} ${(x+r).toFixed(1)},${y.toFixed(1)} ${x.toFixed(1)},${(y+r).toFixed(1)} ${(x-r).toFixed(1)},${y.toFixed(1)}`;
     svg += `<polygon points="${pts}" fill="#e74c3c" stroke="#c0392b" stroke-width="1.5"/>\n`;
     const nearRight = (SVG_W - MR - x) < 200;
-    const lx     = nearRight ? x - r - 6 : x + r + 6;
-    const anchor  = nearRight ? 'end' : 'start';
+    const lx    = nearRight ? x - r - 6 : x + r + 6;
+    const anchor = nearRight ? 'end' : 'start';
     svg += `<text x="${lx.toFixed(1)}" y="${(y + 4).toFixed(1)}" font-size="10" fill="#222" text-anchor="${anchor}">${esc(fullLabel)}</text>\n`;
   });
 
