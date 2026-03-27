@@ -1758,60 +1758,37 @@ function generatePredGanttSVG(selectedId) {
   const xScale = (SVG_W - ML - MR) / totalDays;
   function dateToX(d) { return ML + (d - minDate) / 86400000 * xScale; }
 
-  // Derive ROW_H from the fixed canvas so nodes fill the available space
+  // Layout: continuous y-space, no fixed rows
   const DIAMOND_R   = 8;
-  const MAX_ROWS    = 6;
-  const MIN_X_GAP   = 185;
   const GANTT_H     = 32;
   const AXIS_Y_GAP  = 22;
   const AXIS_TO_BAR = 42;
   const BAR_EXTRA   = 22;
   const msAreaH  = SVG_H - MT - AXIS_Y_GAP - AXIS_TO_BAR - GANTT_H - BAR_EXTRA - MB;
-  const ROW_H    = Math.floor(msAreaH / MAX_ROWS);
-  const AXIS_Y   = MT + MAX_ROWS * ROW_H + AXIS_Y_GAP;
+  const AXIS_Y   = MT + msAreaH + AXIS_Y_GAP;
   const GANTT_Y  = AXIS_Y + AXIS_TO_BAR;
 
-  // Row assignment using bisection order: spread consecutive (close-x) nodes as far apart
-  // vertically as possible, interleaving like binary search tree levels.
-  // e.g. for 6 rows the order is [2, 0, 4, 1, 3, 5] — middle first, then midpoints of
-  // each half, so adjacent nodes in time land in rows that are maximally far apart.
-  predData.sort((a, b) => a.finDate - b.finDate);
-  function bisectOrder(n) {
-    const res = [], q = [[0, n - 1]];
-    while (q.length) {
-      const [lo, hi] = q.shift();
-      if (lo > hi) continue;
-      const mid = lo + Math.floor((hi - lo) / 2);
-      res.push(mid);
-      q.push([lo, mid - 1], [mid + 1, hi]);
-    }
-    return res;
-  }
-  const ROW_ORDER = bisectOrder(MAX_ROWS);
-  const rowNextX = new Array(MAX_ROWS).fill(-Infinity);
-  predData.forEach(d => {
-    d.x = dateToX(d.finDate);
-    // Try rows in bisection order; pick the first where d.x clears the previous diamond
-    let best = -1;
-    for (const r of ROW_ORDER) {
-      if (d.x >= rowNextX[r]) { best = r; break; }
-    }
-    // Fallback: all rows overlap — pick the one whose next-available x is earliest
-    if (best === -1) {
-      best = ROW_ORDER.reduce((a, b) => rowNextX[a] < rowNextX[b] ? a : b);
-    }
-    d.row = best;
-    // Track diamond footprint only (label is above, not to the right)
-    rowNextX[best] = d.x + DIAMOND_R * 2 + 4;
-    // Place diamond in the lower portion of its row slot so the label has room above
-    d.y = MT + d.row * ROW_H + Math.round(ROW_H * 0.72);
-  });
+  // Waterfall y-placement: nodes sorted by date cycle through two interleaved height
+  // sequences so each successive node lands far from the previous vertically.
+  //   String 1: 100%, 80%, 60%, 40%, 20%  (of milestone area height, from axis upward)
+  //   String 2:  90%, 70%, 50%, 30%, 10%
+  // Repeats.  Within a date cluster, each node also steps slightly rightward (feathering)
+  // so the cluster fans out as a gentle diagonal rather than a vertical stack.
+  const Y_PCT        = [1.0, 0.8, 0.6, 0.4, 0.2, 0.9, 0.7, 0.5, 0.3, 0.1];
+  const STAGGER_STEP = 22;   // px rightward per node within a cluster
+  const CLUSTER_GAP  = 55;   // px separation on x that starts a fresh stagger run
 
-  // Feather: shift each diamond slightly left/right by row index so nodes at the same
-  // date form a gentle diagonal cascade rather than a perfect vertical stack.
-  const STAGGER_PX = 14;
-  predData.forEach(d => {
-    d.xDisplay = d.x + (d.row - (MAX_ROWS - 1) / 2) * STAGGER_PX;
+  predData.sort((a, b) => a.finDate - b.finDate);
+  const usableH = msAreaH - 16;   // 8 px breathing room at top and bottom
+  let staggerAccum = 0, lastX = -Infinity;
+
+  predData.forEach((d, i) => {
+    d.x = dateToX(d.finDate);
+    if (d.x - lastX > CLUSTER_GAP) staggerAccum = 0;
+    d.xDisplay = d.x + staggerAccum;
+    d.y = Math.round(AXIS_Y - 8 - usableH * Y_PCT[i % Y_PCT.length]);
+    staggerAccum += STAGGER_STEP;
+    lastX = d.x;
   });
 
   // Quarter ticks: every quarter boundary within the date range
@@ -1878,25 +1855,25 @@ function generatePredGanttSVG(selectedId) {
     if (selTF) svg += `<text x="${(gx2 + 8).toFixed(1)}" y="${(GANTT_Y + GANTT_H / 2 + 16).toFixed(1)}" font-size="10" fill="#555">${esc(selTF)}</text>\n`;
   }
 
-  // Diamond milestone nodes — label centered ABOVE diamond to avoid horizontal spread
+  // Diamond milestone nodes — label to the LEFT of the diamond
   predData.forEach(({ xDisplay, y, label, float }) => {
-    const r = DIAMOND_R;
+    const r  = DIAMOND_R;
     const cx = xDisplay;
     const pts = `${cx.toFixed(1)},${(y-r).toFixed(1)} ${(cx+r).toFixed(1)},${y.toFixed(1)} ${cx.toFixed(1)},${(y+r).toFixed(1)} ${(cx-r).toFixed(1)},${y.toFixed(1)}`;
     svg += `<polygon points="${pts}" fill="#e74c3c" stroke="#c0392b" stroke-width="1.5"/>\n`;
 
-    // Label: 1 line if short enough, 2 lines otherwise (name then float)
     const floatTxt  = float != null ? `${float}d` : '';
     const singleTxt = float != null ? `${label}, ${floatTxt}` : label;
-    const MAX_SINGLE = 28;  // chars before switching to 2-line
-    const MAX_NAME   = 24;  // max chars for truncated name line
+    const lx = (cx - r - 6).toFixed(1);   // anchor point: just left of diamond
 
-    if (singleTxt.length <= MAX_SINGLE) {
-      svg += `<text x="${cx.toFixed(1)}" y="${(y - r - 7).toFixed(1)}" text-anchor="middle" font-size="9" fill="#222">${esc(singleTxt)}</text>\n`;
+    if (singleTxt.length <= 30) {
+      // Single line: "Name, Xd" right-aligned ending at diamond edge
+      svg += `<text x="${lx}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#222">${esc(singleTxt)}</text>\n`;
     } else {
-      const nameTrunc = label.length > MAX_NAME ? label.slice(0, MAX_NAME - 1) + '\u2026' : label;
-      svg += `<text x="${cx.toFixed(1)}" y="${(y - r - 19).toFixed(1)}" text-anchor="middle" font-size="9" fill="#222">${esc(nameTrunc)}</text>\n`;
-      if (floatTxt) svg += `<text x="${cx.toFixed(1)}" y="${(y - r - 7).toFixed(1)}" text-anchor="middle" font-size="9" fill="#555">${esc(floatTxt)}</text>\n`;
+      // Two lines: name (truncated) above, float below, both right-aligned
+      const nameTrunc = label.length > 26 ? label.slice(0, 25) + '\u2026' : label;
+      svg += `<text x="${lx}" y="${(y - 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#222">${esc(nameTrunc)}</text>\n`;
+      if (floatTxt) svg += `<text x="${lx}" y="${(y + 9).toFixed(1)}" text-anchor="end" font-size="9" fill="#555">${esc(floatTxt)}</text>\n`;
     }
   });
 
