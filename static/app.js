@@ -1774,21 +1774,18 @@ function generatePredGanttSVG(selectedId) {
   //   String 2:  90%, 70%, 50%, 30%, 10%
   // Repeats.  Within a date cluster, each node also steps slightly rightward (feathering)
   // so the cluster fans out as a gentle diagonal rather than a vertical stack.
-  const Y_PCT        = [1.0, 0.8, 0.6, 0.4, 0.2, 0.9, 0.7, 0.5, 0.3, 0.1];
-  const STAGGER_STEP = 22;   // px rightward per node within a cluster
-  const CLUSTER_GAP  = 55;   // px separation on x that starts a fresh stagger run
+  // Waterfall y-placement: nodes sorted by date cycle through two interleaved height
+  // sequences so each successive node lands far from the previous vertically.
+  //   String 1: 100%, 80%, 60%, 40%, 20%  (of milestone area, measured upward from axis)
+  //   String 2:  90%, 70%, 50%, 30%, 10%
+  const Y_PCT   = [1.0, 0.8, 0.6, 0.4, 0.2, 0.9, 0.7, 0.5, 0.3, 0.1];
+  const usableH = msAreaH - 16;   // 8 px breathing room at top and bottom
 
   predData.sort((a, b) => a.finDate - b.finDate);
-  const usableH = msAreaH - 16;   // 8 px breathing room at top and bottom
-  let staggerAccum = 0, lastX = -Infinity;
-
   predData.forEach((d, i) => {
-    d.x = dateToX(d.finDate);
-    if (d.x - lastX > CLUSTER_GAP) staggerAccum = 0;
-    d.xDisplay = d.x + staggerAccum;
-    d.y = Math.round(AXIS_Y - 8 - usableH * Y_PCT[i % Y_PCT.length]);
-    staggerAccum += STAGGER_STEP;
-    lastX = d.x;
+    d.x        = dateToX(d.finDate);
+    d.xDisplay = d.x;   // no horizontal stagger — diamonds sit on their true date
+    d.y        = Math.round(AXIS_Y - 8 - usableH * Y_PCT[i % Y_PCT.length]);
   });
 
   // Quarter ticks: every quarter boundary within the date range
@@ -1855,7 +1852,7 @@ function generatePredGanttSVG(selectedId) {
     if (selTF) svg += `<text x="${(gx2 + 8).toFixed(1)}" y="${(GANTT_Y + GANTT_H / 2 + 16).toFixed(1)}" font-size="10" fill="#555">${esc(selTF)}</text>\n`;
   }
 
-  // Diamond milestone nodes — label to the LEFT of the diamond
+  // Diamond milestone nodes — label to the RIGHT of the diamond
   predData.forEach(({ xDisplay, y, label, float }) => {
     const r  = DIAMOND_R;
     const cx = xDisplay;
@@ -1864,16 +1861,14 @@ function generatePredGanttSVG(selectedId) {
 
     const floatTxt  = float != null ? `${float}d` : '';
     const singleTxt = float != null ? `${label}, ${floatTxt}` : label;
-    const lx = (cx - r - 6).toFixed(1);   // anchor point: just left of diamond
+    const lx = (cx + r + 6).toFixed(1);   // anchor point: just right of diamond
 
     if (singleTxt.length <= 30) {
-      // Single line: "Name, Xd" right-aligned ending at diamond edge
-      svg += `<text x="${lx}" y="${(y + 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#222">${esc(singleTxt)}</text>\n`;
+      svg += `<text x="${lx}" y="${(y + 3).toFixed(1)}" text-anchor="start" font-size="9" fill="#222">${esc(singleTxt)}</text>\n`;
     } else {
-      // Two lines: name (truncated) above, float below, both right-aligned
       const nameTrunc = label.length > 26 ? label.slice(0, 25) + '\u2026' : label;
-      svg += `<text x="${lx}" y="${(y - 3).toFixed(1)}" text-anchor="end" font-size="9" fill="#222">${esc(nameTrunc)}</text>\n`;
-      if (floatTxt) svg += `<text x="${lx}" y="${(y + 9).toFixed(1)}" text-anchor="end" font-size="9" fill="#555">${esc(floatTxt)}</text>\n`;
+      svg += `<text x="${lx}" y="${(y - 3).toFixed(1)}" text-anchor="start" font-size="9" fill="#222">${esc(nameTrunc)}</text>\n`;
+      if (floatTxt) svg += `<text x="${lx}" y="${(y + 9).toFixed(1)}" text-anchor="start" font-size="9" fill="#555">${esc(floatTxt)}</text>\n`;
     }
   });
 
